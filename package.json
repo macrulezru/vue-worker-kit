@@ -1,0 +1,101 @@
+{
+  "name": "vue-worker-kit",
+  "version": "0.1.0",
+  "description": "Type-safe Web Worker composables for Vue 3 — useWorker(), worker pool, reactive useWorkerComputed(), zero dependencies, SSR-safe.",
+  "author": "macrulez <macrulezru@gmail.com> (https://macrulez.ru/en)",
+  "license": "MIT",
+  "homepage": "https://github.com/macrulezru/vue-worker-kit#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/macrulezru/vue-worker-kit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/macrulezru/vue-worker-kit/issues"
+  },
+  "keywords": [
+    "vue",
+    "vue3",
+    "web-worker",
+    "worker",
+    "typescript",
+    "composable",
+    "offscreencanvas",
+    "nuxt",
+    "ssr"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./worker": {
+      "types": "./dist/worker/defineWorkerHandler.d.ts",
+      "import": "./dist/worker/defineWorkerHandler.mjs",
+      "require": "./dist/worker/defineWorkerHandler.cjs"
+    },
+    "./pool": {
+      "types": "./dist/adapters/pool.d.ts",
+      "import": "./dist/adapters/pool.mjs",
+      "require": "./dist/adapters/pool.cjs"
+    },
+    "./computed": {
+      "types": "./dist/adapters/computed.d.ts",
+      "import": "./dist/adapters/computed.mjs",
+      "require": "./dist/adapters/computed.cjs"
+    },
+    "./devtools": {
+      "types": "./dist/devtools/index.d.ts",
+      "import": "./dist/devtools/index.mjs",
+      "require": "./dist/devtools/index.cjs"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "vite build && vue-tsc -p tsconfig.build.json --declaration --emitDeclarationOnly --outDir dist",
+    "dev": "vite build --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "vue-tsc --noEmit",
+    "demo": "npm run dev --prefix demo",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build",
+    "lint": "eslint . --ext .vue,.js,.jsx,.ts,.tsx --fix",
+    "format": "prettier --write src/"
+  },
+  "peerDependencies": {
+    "vue": "^3.4.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@vitejs/plugin-vue": "^5.0.0",
+    "@vitest/coverage-v8": "^2.0.0",
+    "@vue/test-utils": "^2.4.0",
+    "eslint": "^10.4.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-vue": "^10.9.1",
+    "globals": "^17.6.0",
+    "happy-dom": "^14.0.0",
+    "prettier": "^3.8.3",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.60.0",
+    "vite": "^5.4.21",
+    "vite-plugin-dts": "^3.0.0",
+    "vitest": "^2.0.0",
+    "vue": "^3.4.0",
+    "vue-tsc": "^2.0.0"
+  }
+}
