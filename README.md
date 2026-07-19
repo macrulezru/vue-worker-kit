@@ -1,4 +1,13 @@
-# vue-worker-kit
+<div align="center" style="background:#111827;border-radius:20px;padding:28px 20px 20px;margin-bottom:32px">
+  <h1 style="color:#f9fafb;margin:0 0 32px;font-size:2.2em;letter-spacing:-0.03em;font-weight:700;font-family:sans-serif">
+    vue-worker-kit
+  </h1>
+  <img
+    src="https://s3.twcstorage.ru/c9a2cc89-780f97fd-311d-4a1a-b86f-c25665c9dc46/images/npm/vue-worker-kit.webp"
+    alt="vue-worker-kit"
+    style="max-width:100%;width:auto;height:300px;border-radius:12px"
+  />
+</div>
 
 Type-safe Web Worker composables for Vue 3 — `useWorker()`, a worker pool, and a reactive `useWorkerComputed()`, with input/output types inferred straight from the worker file itself. Zero runtime dependencies beyond Vue.
 
@@ -267,9 +276,3 @@ No `worker-loader`/`worker-plugin` or other webpack-era workarounds needed — t
 | Transferables | ✗ | ✓ (manual, both directions) | ✓ (`RunOptions.transfer` in, `ctx.transfer()` out) |
 | SSR-safe | ✗ | — | ✓ |
 | Dependencies | — | none | none beyond `vue` |
-
-## Not in v1 (roadmap)
-
-- `SharedWorker` mode for cross-tab synchronization — deliberately deferred: it's a different transport model (one `MessagePort` per connecting tab, not a single `postMessage` channel), and isn't supported in Safari on iOS or Chrome on Android at all, which needs a deliberate compatibility story rather than a quick add-on
-- Ready-made `OffscreenCanvas` rendering helpers for specific canvas libraries — transfer-out itself is supported (see [Transferables](#transferables)); library-specific helpers (Konva, PixiJS, Three.js, raw 2D context...) are left to userland until there's a concrete target to build against
-- Worker-side reactive store (two-way state sync between threads) — a substantially different problem (diffing/patch serialization, conflict handling) that warrants its own performance research before committing to an API, not a bolt-on to the existing `run()`-based protocol
