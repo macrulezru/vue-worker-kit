@@ -291,7 +291,7 @@ Danil Lisin Vladimirovich aka Macrulez
 
 GitHub: [macrulezru](https://github.com/macrulezru) · Website: [macrulez.ru/en](https://macrulez.ru/en)
 
-Questions and bugs — [issues](https://github.com/macrulezru/vue-virtual-scroller-kit/issues)
+Questions and bugs — [issues](https://github.com/macrulezru/vue-worker-kit/issues)
 
 ---
 
