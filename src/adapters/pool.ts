@@ -4,7 +4,7 @@ import { WorkerUnavailableError, toAbortError } from '../errors'
 import { attachActivityBus, createActivityBus } from '../internal/activityBus'
 import { createWorkerClient, type WorkerClient } from '../internal/workerClient'
 import type { WorkerLike } from '../protocol'
-import type { RunOptions, WorkerModuleInput, WorkerModuleOutput } from '../types'
+import type { RunOptions, WorkerModuleInput, WorkerModuleOutput, WorkerBatchOptions } from '../types'
 
 export interface WorkerPoolOptions {
   /**
@@ -30,16 +30,25 @@ export interface WorkerPoolStats {
   queued: number
 }
 
-export interface WorkerMapOptions {
+export interface WorkerMapOptions<T = unknown> {
+  /** Number of concurrent tasks. Defaults to pool size. */
   concurrency?: number
+  /** Global abort signal for all items. */
+  signal?: AbortSignal
+  /** Per-item transfer list function for zero-copy transfers. */
+  transfer?: (item: T) => Transferable[]
 }
 
 export interface WorkerPool<In, Out> {
   run(input: In, options?: RunOptions): Promise<Out>
-  map(items: In[], options?: WorkerMapOptions): Promise<Out[]>
+  map(items: In[], options?: WorkerMapOptions<In>): Promise<Out[]>
+  /** Run items in batches to reduce postMessage overhead for many small tasks. */
+  runBatch(items: In[], options?: WorkerBatchOptions): Promise<Out[]>
   readonly stats: ComputedRef<WorkerPoolStats>
   readonly size: number
   terminate(): void
+  /** Pre-create all workers up to `size` without running any tasks. */
+  warmup(): Promise<void>
 }
 
 interface QueuedTask {
@@ -54,6 +63,10 @@ interface Slot {
   worker: WorkerLike
   client: WorkerClient
   busy: boolean
+}
+
+interface WarmupTask {
+  resolve(): void
 }
 
 /**
@@ -164,12 +177,15 @@ export function createWorkerPool<TModule>(
     const concurrency = Math.max(1, mapOptions.concurrency ?? size)
     const results: unknown[] = new Array(items.length)
     let nextIndex = 0
+    const globalSignal = mapOptions.signal
 
     async function worker(): Promise<void> {
       for (;;) {
         const index = nextIndex++
         if (index >= items.length) return
-        results[index] = await run(items[index])
+        const item = items[index]
+        const transfer = mapOptions.transfer ? mapOptions.transfer(item) : undefined
+        results[index] = await run(item, { transfer, signal: globalSignal })
       }
     }
 
@@ -177,6 +193,47 @@ export function createWorkerPool<TModule>(
       Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
     )
     return results
+  }
+
+  async function runBatch(items: unknown[], batchOptions: WorkerBatchOptions = {}): Promise<unknown[]> {
+    const batchSize = batchOptions.batchSize ?? 50
+    const signal = batchOptions.signal
+    const results: unknown[] = []
+
+    // Split items into batches
+    const batches: unknown[][] = []
+    for (let i = 0; i < items.length; i += batchSize) {
+      batches.push(items.slice(i, i + batchSize))
+    }
+
+    // Process batches concurrently using the pool
+    const batchPromises = batches.map(async (batch) => {
+      // Send entire batch as a single task
+      const batchResult = await run(batch, { signal })
+      return batchResult as unknown[]
+    })
+
+    const batchResults = await Promise.all(batchPromises)
+    // Flatten results
+    for (const batchResult of batchResults) {
+      results.push(...batchResult)
+    }
+
+    return results
+  }
+
+  async function warmup(): Promise<void> {
+    if (terminated) return
+    const warmupPromises: Promise<void>[] = []
+    for (let i = slots.length; i < size; i++) {
+      const promise = new Promise<void>((resolve) => {
+        const slot = createSlot()
+        slot.busy = false
+        resolve()
+      })
+      warmupPromises.push(promise)
+    }
+    await Promise.all(warmupPromises)
   }
 
   function terminate(): void {
@@ -196,9 +253,11 @@ export function createWorkerPool<TModule>(
     {
       run: run as WorkerPool<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>['run'],
       map: map as WorkerPool<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>['map'],
+      runBatch: runBatch as WorkerPool<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>['runBatch'],
       stats,
       size,
       terminate,
+      warmup,
     },
     activityBus,
   )

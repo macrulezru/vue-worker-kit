@@ -1,55 +1,51 @@
 import { computed, getCurrentScope, onScopeDispose, ref, shallowRef } from 'vue'
 import type { ComputedRef, ShallowRef } from 'vue'
-import { WorkerError, WorkerUnavailableError, isAbortError, toAbortError } from './errors'
-import { attachActivityBus, createActivityBus } from './internal/activityBus'
-import { createWorkerClient, type WorkerClient } from './internal/workerClient'
-import type { WorkerLike } from './protocol'
-import type { RunOptions, WorkerModuleInput, WorkerModuleOutput, UseWorkerCacheOptions } from './types'
+import { WorkerError, WorkerUnavailableError, isAbortError, toAbortError } from '../errors'
+import { attachActivityBus, createActivityBus } from '../internal/activityBus'
+import { createWorkerClient, type WorkerClient } from '../internal/workerClient'
+import type { WorkerLike } from '../protocol'
+import type { RunOptions, WorkerModuleInput, WorkerModuleOutput, UseWorkerCacheOptions } from '../types'
 
-export interface UseWorkerOptions {
+export interface UseSharedWorkerOptions {
   /** Milliseconds of idle time before the worker self-terminates; `false` disables it. Default `30000`. */
   idleTimeout?: number | false
   /** Automatic retries on rejection, not applied to cancellations. Default `0`. */
   retries?: number
-  /** Delay function for exponential backoff. Default: immediate retry. */
+  /** Delay function for exponential backoff. */
   retryDelay?: (attempt: number) => number
-  /** Terminate & recreate the worker immediately on abort, instead of waiting for cooperative `ctx.signal` handling. Default `false`. */
-  hardCancelOnAbort?: boolean
   /** Cache options for memoization. */
   cache?: UseWorkerCacheOptions
   /** Enable streaming mode with chunked results. */
   streaming?: boolean
+  /** Unique name for the SharedWorker - multiple tabs with same name share the worker */
+  name?: string
 }
 
-export interface UseWorkerReturn<In, Out> {
+export interface UseSharedWorkerReturn<In, Out> {
   run(input: In, options?: RunOptions): Promise<Out>
   isRunning: ComputedRef<boolean>
   progress: ShallowRef<number>
   error: ShallowRef<WorkerError | null>
   cancel(): void
-  /** Pre-create the worker without running any task. */
   warmup(): Promise<void>
-  /** Reactive array of chunks for streaming mode. */
   chunks?: ShallowRef<unknown[]>
 }
 
 /**
- * Main-thread composable wrapping a single lazily-created worker. `TModule` is meant to be
- * `typeof import('./x.worker')` — `run()`'s input/output types are read off of it, see
- * `WorkerModuleInput`/`WorkerModuleOutput` in `./types`.
+ * Composable for SharedWorker - allows reuse of a single worker across multiple browser tabs.
+ * Note: Not supported in Safari iOS and Chrome Android.
  */
-export function useWorker<TModule>(
-  factory: () => Worker,
-  options: UseWorkerOptions = {},
-): UseWorkerReturn<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>> {
+export function useSharedWorker<TModule>(
+  factory: () => SharedWorker,
+  options: UseSharedWorkerOptions = {},
+): UseSharedWorkerReturn<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>> {
   const idleTimeout = options.idleTimeout ?? 30_000
   const retries = options.retries ?? 0
   const retryDelay = options.retryDelay
-  const hardCancelOnAbort = options.hardCancelOnAbort ?? false
   const cacheOptions = options.cache
   const streaming = options.streaming ?? false
 
-  let worker: WorkerLike | null = null
+  let worker: SharedWorker | null = null
   let client: WorkerClient | null = null
   let idleTimer: ReturnType<typeof setTimeout> | undefined
   const internalControllers = new Set<AbortController>()
@@ -80,27 +76,42 @@ export function useWorker<TModule>(
 
   function terminate(): void {
     clearIdleTimer()
-    client?.dispose(toAbortError('Worker terminated'))
-    worker?.terminate()
+    client?.dispose(toAbortError('SharedWorker terminated'))
+    if (worker) {
+      worker.port.postMessage({ type: 'terminate' })
+      worker.port.close()
+    }
     worker = null
     client = null
   }
 
   function ensureClient(): WorkerClient {
-    if (typeof Worker === 'undefined') {
-      throw new WorkerUnavailableError()
+    if (typeof SharedWorker === 'undefined') {
+      throw new WorkerUnavailableError('SharedWorker is not supported in this environment')
     }
     clearIdleTimer()
     if (!client) {
-      worker = factory() as unknown as WorkerLike
-      client = createWorkerClient(worker)
+      worker = factory()
+      // SharedWorker uses port for communication
+      const portLike: WorkerLike = {
+        postMessage: (message, transfer) => worker!.port.postMessage(message, transfer ?? []),
+        terminate: () => worker!.port.close(),
+        onmessage: null,
+        onerror: null,
+      }
+      client = createWorkerClient(portLike)
+      // Forward messages from port to client
+      worker.port.onmessage = (event) => {
+        if (client && portLike.onmessage) {
+          portLike.onmessage(event as MessageEvent)
+        }
+      }
     }
     return client
   }
 
   function pruneCache(): void {
     if (!cache || cache.size <= maxCacheSize) return
-    // Remove oldest entries (first inserted)
     const keys = Array.from(cache.keys())
     for (let i = 0; i < keys.length - maxCacheSize; i++) {
       cache.delete(keys[i])
@@ -111,7 +122,6 @@ export function useWorker<TModule>(
     if (!cache) return undefined
     const result = cache.get(key)
     if (result !== undefined) {
-      // Move to end (most recently used)
       cache.delete(key)
       cache.set(key, result)
     }
@@ -120,7 +130,7 @@ export function useWorker<TModule>(
 
   function setCachedResult(key: string, result: unknown): void {
     if (!cache) return
-    cache.delete(key) // Remove old entry if exists
+    cache.delete(key)
     cache.set(key, result)
     pruneCache()
   }
@@ -143,7 +153,6 @@ export function useWorker<TModule>(
     return new Promise((resolve, reject) => {
       const onAbort = (): void => {
         activeClient.cancel(id, signal.reason)
-        if (hardCancelOnAbort) terminate()
         reject(toAbortError(signal.reason))
       }
       signal.addEventListener('abort', onAbort, { once: true })
@@ -161,7 +170,6 @@ export function useWorker<TModule>(
   }
 
   async function run(input: unknown, runOptions: RunOptions = {}): Promise<unknown> {
-    // Check cache first if enabled
     const cacheKey = cache ? JSON.stringify(input) : null
     if (cacheKey !== null) {
       const cachedResult = getCachedResult(cacheKey)
@@ -198,7 +206,6 @@ export function useWorker<TModule>(
                 }
               : undefined,
           )
-          // Cache the result if enabled
           if (cacheKey !== null) {
             setCachedResult(cacheKey, result)
           }
@@ -207,7 +214,6 @@ export function useWorker<TModule>(
           if (isAbortError(err) || err instanceof WorkerUnavailableError) throw err
           if (attempt < retries) {
             attempt++
-            // Apply exponential backoff if retryDelay is provided
             if (retryDelay) {
               const delay = retryDelay(attempt)
               await new Promise((resolve) => setTimeout(resolve, delay))
@@ -240,8 +246,8 @@ export function useWorker<TModule>(
     onScopeDispose(() => terminate())
   }
 
-  const result: UseWorkerReturn<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>> = {
-    run: run as UseWorkerReturn<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>['run'],
+  const result: UseSharedWorkerReturn<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>> = {
+    run: run as UseSharedWorkerReturn<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>['run'],
     isRunning,
     progress,
     error,

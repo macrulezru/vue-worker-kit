@@ -29,6 +29,7 @@ Type-safe Web Worker composables for Vue 3 — `useWorker()`, a worker pool, and
 - [Cancellation](#cancellation)
 - [Error handling](#error-handling)
 - [Worker lifecycle](#worker-lifecycle)
+  - [Warmup](#warmup)
 - [SSR / Nuxt](#ssr--nuxt)
 - [Bundler support](#bundler-support)
 - [Comparison](#comparison)
@@ -120,10 +121,13 @@ You don't need to call `reportProgress(1)` yourself right before returning — a
 Main-thread composable, wraps a single lazily-created worker.
 
 ```ts
-const { run, isRunning, progress, error, cancel } = useWorker<typeof import('./x.worker')>(
+const { run, isRunning, progress, error, cancel, warmup } = useWorker<typeof import('./x.worker')>(
   () => new Worker(new URL('./x.worker.ts', import.meta.url), { type: 'module' }),
   { idleTimeout: 30_000, retries: 0 },
 )
+
+// Optional: pre-create the worker without running a task (avoids cold-start latency on first run)
+await warmup()
 
 const output = await run(input, { transfer: [input.buffer], signal: controller.signal })
 ```
@@ -141,6 +145,7 @@ Returns:
 - `run(input, options?) => Promise<Output>` — `options: { transfer?: Transferable[], signal?: AbortSignal }`
 - `isRunning: ComputedRef<boolean>`, `progress: ShallowRef<number>`, `error: ShallowRef<WorkerError | null>`
 - `cancel()` — aborts the current `run()` call(s) that didn't receive their own `signal`
+- `warmup(): Promise<void>` — pre-creates the worker without executing a task (useful for avoiding cold-start latency)
 - automatic `terminate()` on `onScopeDispose` when called inside an active effect scope
 
 `run()`'s input is passed through `toRaw()` before being posted — a `ref`/`reactive` value read straight off a component (`() => list.value`) is not structured-cloneable as a live Proxy, so the raw snapshot is what actually gets sent.
@@ -156,14 +161,27 @@ const pool = createWorkerPool<typeof import('./resize.worker')>(() =>
   new Worker(new URL('./resize.worker.ts', import.meta.url), { type: 'module' }),
 )
 
-const thumbnails = await pool.map(files, { concurrency: pool.size })
+// Pre-create all workers up to size (optional, avoids cold-start latency on first tasks)
+await pool.warmup()
+
+// Process array with per-item transfer and global cancellation signal
+const thumbnails = await pool.map(files, {
+  concurrency: 4,
+  transfer: (file) => [file.buffer],  // zero-copy per item
+  signal: abortController.signal,     // cancel all running tasks
+})
+
 const one = await pool.run(files[0])
 ```
 
-- `pool.run(input, options?)` — queues the task on the first free worker
-- `pool.map(items, { concurrency? })` — sugar over `pool.run()` per item, bounded parallelism, results in input order
+- `pool.run(input, options?)` — queues the task on the first free worker, `options: { transfer?: Transferable[], signal?: AbortSignal }`
+- `pool.map(items, options?)` — processes array with bounded parallelism, results in input order. Options:
+  - `concurrency?: number` — max parallel tasks (default: `pool.size`)
+  - `transfer?: (item: T) => Transferable[]` — per-item zero-copy transfer function
+  - `signal?: AbortSignal` — global cancellation signal for all items
 - `pool.stats: ComputedRef<{ busy: number; idle: number; queued: number }>` — reactive, used by the devtools panel
 - `pool.terminate()` — kills the whole pool
+- `pool.warmup(): Promise<void>` — pre-creates all workers up to `size` without executing tasks
 - workers are created lazily, up to `size`, as tasks arrive — not all at once
 - `size` (option) defaults to `navigator.hardwareConcurrency` — the browser's own count of logical cores/threads on the machine actually running your app, not a number picked at development time. Pass `size` explicitly to override it (e.g. to cap it, or if `navigator` reports something you don't want to trust — some privacy-hardened browsers cap or round it). Falls back to `4` where `navigator` doesn't exist (SSR).
 - `useWorkerPool()` is the same API with `onScopeDispose` auto-termination for use directly in `setup()`
@@ -248,6 +266,29 @@ If you don't pass your own `signal`, `run()` creates one internally; `cancel()` 
 - **Scope-based auto-termination** — `useWorker`/`useWorkerPool` called inside `setup()` terminate their worker(s) on `onScopeDispose`, avoiding the classic SPA-navigation leak.
 - **Pool workers are lazy** — created as tasks arrive, up to `size`, not all at `createWorkerPool()` time.
 
+### Warmup
+
+To avoid cold-start latency on the first task, you can pre-create workers without executing any work:
+
+```ts
+// Single worker
+const { warmup, run } = useWorker<typeof import('./x.worker')>(() =>
+  new Worker(new URL('./x.worker.ts', import.meta.url), { type: 'module' }),
+)
+await warmup() // Worker is now instantiated and ready
+const result = await run(data) // No worker creation delay
+
+// Pool - pre-create all workers up to size
+const pool = createWorkerPool<typeof import('./resize.worker')>(() =>
+  new Worker(new URL('./resize.worker.ts', import.meta.url), { type: 'module' }),
+  { size: 4 },
+)
+await pool.warmup() // All 4 workers are now instantiated
+const results = await pool.map(items) // Immediate execution, no cold starts
+```
+
+Warmup is useful when you know a worker-intensive operation is about to happen (e.g., user clicks "Process" button) and you want to eliminate the ~50-200ms worker creation latency. Call it during idle time (e.g., `onMounted`, or after initial page load) to keep interactions snappy.
+
 ## SSR / Nuxt
 
 `useWorker`/`useWorkerComputed`/`useWorkerPool` are safe to call in `setup()` on the server — the constructor is passed as a factory (`() => new Worker(...)`) and only invoked from inside `run()`, i.e. only on the client in normal usage. If `run()` is nonetheless called during SSR, you get a `WorkerUnavailableError` with a clear message rather than a crash. Guard client-only usage with `<ClientOnly>` in Nuxt:
@@ -270,10 +311,11 @@ No `worker-loader`/`worker-plugin` or other webpack-era workarounds needed — t
 |---|---|---|---|
 | Composition API | ✗ | — (not Vue-specific) | ✓ |
 | Typed input/output | ✗ | manual `wrap<T>()` | inferred from the worker file |
-| Worker pool | ✗ | ✗ | ✓ |
+| Worker pool | ✗ | ✗ | ✓ (`createWorkerPool`, `pool.map` with per-item transfer) |
 | Reactive computed-in-worker | ✗ | ✗ | ✓ (`useWorkerComputed`) |
-| Cancellation | ✗ | ✗ | ✓ (`AbortSignal`) |
-| Transferables | ✗ | ✓ (manual, both directions) | ✓ (`RunOptions.transfer` in, `ctx.transfer()` out) |
+| Cancellation | ✗ | ✗ | ✓ (`AbortSignal`, per-task + global for pool) |
+| Transferables | ✗ | ✓ (manual, both directions) | ✓ (`RunOptions.transfer` in, `ctx.transfer()` out, per-item for pool.map) |
+| Worker warmup | ✗ | ✗ | ✓ (`warmup()` for single worker and pool) |
 | SSR-safe | ✗ | — | ✓ |
 | Dependencies | — | none | none beyond `vue` |
 

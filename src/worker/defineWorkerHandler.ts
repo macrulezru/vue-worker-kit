@@ -15,6 +15,11 @@ export interface WorkerContext {
    * included. The objects don't need to be part of the returned value itself.
    */
   transfer(...transferables: Transferable[]): void
+  /**
+   * Sends a chunk of results for streaming mode. Chunks are accumulated in `chunks.value` on the
+   * main thread and can be consumed incrementally without waiting for the full result.
+   */
+  reportChunk(chunk: unknown): void
 }
 
 /**
@@ -67,6 +72,9 @@ export function attachWorkerProtocol<In, Out>(
       }),
       transfer(...transferables) {
         outgoingTransfer.push(...transferables)
+      },
+      reportChunk(chunk) {
+        scope.postMessage({ type: 'chunk', id: msg.id, chunk })
       },
     }
 

@@ -1,0 +1,32 @@
+{
+  "name": "vue-worker-kit-nuxt",
+  "version": "0.1.3",
+  "description": "Nuxt module for vue-worker-kit - Type-safe Web Worker composables",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/module.d.ts",
+      "import": "./dist/module.mjs"
+    }
+  },
+  "main": "./dist/module.cjs",
+  "types": "./dist/module.d.ts",
+  "files": [
+    "dist",
+    "runtime"
+  ],
+  "scripts": {
+    "build": "nuxt-module-build build",
+    "dev": "nuxi dev playground",
+    "dev:build": "nuxi build playground",
+    "dev:prepare": "nuxt-module-build build --stub && nuxt-module-build prepare && nuxi prepare playground"
+  },
+  "dependencies": {
+    "@nuxt/kit": "^3.0.0",
+    "vue-worker-kit": "^0.1.3"
+  },
+  "devDependencies": {
+    "@nuxt/module-builder": "^0.5.0",
+    "nuxt": "^3.0.0"
+  }
+}

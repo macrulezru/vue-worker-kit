@@ -6,12 +6,18 @@ interface PendingRequest {
   resolve(output: unknown): void
   reject(error: unknown): void
   onProgress?: (value: number) => void
+  onChunk?: (chunk: unknown) => void
   /** Synthetic error created at the `run()` call site — becomes `WorkerError.cause` on failure. */
   callSiteError: Error
 }
 
 export interface WorkerClient {
-  send(input: unknown, transfer: Transferable[] | undefined, onProgress?: (value: number) => void): {
+  send(
+    input: unknown,
+    transfer: Transferable[] | undefined,
+    onProgress?: (value: number) => void,
+    onChunk?: (chunk: unknown) => void,
+  ): {
     id: number
     promise: Promise<unknown>
   }
@@ -39,6 +45,11 @@ export function createWorkerClient(worker: WorkerLike): WorkerClient {
       return
     }
 
+    if (msg.type === 'chunk') {
+      entry.onChunk?.(msg.chunk)
+      return
+    }
+
     pending.delete(msg.id)
     if (msg.type === 'result') {
       entry.resolve(msg.output)
@@ -58,6 +69,7 @@ export function createWorkerClient(worker: WorkerLike): WorkerClient {
     input: unknown,
     transfer: Transferable[] | undefined,
     onProgress?: (value: number) => void,
+    onChunk?: (chunk: unknown) => void,
   ): { id: number; promise: Promise<unknown> } {
     const id = nextId++
     // Created here (synchronously, at the call site) so a later failure's `.cause` points
@@ -65,7 +77,7 @@ export function createWorkerClient(worker: WorkerLike): WorkerClient {
     const callSiteError = new Error('vue-worker-kit: run() called from here')
 
     const promise = new Promise<unknown>((resolve, reject) => {
-      pending.set(id, { resolve, reject, onProgress, callSiteError })
+      pending.set(id, { resolve, reject, onProgress, onChunk, callSiteError })
     })
 
     try {
