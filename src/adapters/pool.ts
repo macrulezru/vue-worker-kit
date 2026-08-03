@@ -65,10 +65,6 @@ interface Slot {
   busy: boolean
 }
 
-interface WarmupTask {
-  resolve(): void
-}
-
 /**
  * A pool of lazily-created workers for many small, independent tasks (e.g. resizing
  * hundreds of images). `TModule` is `typeof import('./x.worker')`, same convention as
