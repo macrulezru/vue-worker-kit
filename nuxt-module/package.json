@@ -1,0 +1,48 @@
+{
+  "name": "@nuxtjs/vue-worker-kit",
+  "version": "0.1.0",
+  "description": "Nuxt module for vue-worker-kit - Type-safe Web Worker composables",
+  "author": "macrulez <macrulezru@gmail.com>",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/module.d.ts",
+      "import": "./dist/module.mjs",
+      "require": "./dist/module.cjs"
+    }
+  },
+  "main": "./dist/module.cjs",
+  "types": "./dist/module.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prepare": "nuxt-module-build prepare",
+    "build": "nuxt-module-build build",
+    "dev": "nuxi dev playground",
+    "dev:build": "nuxi build playground",
+    "dev:prepare": "nuxt-module-build build --stub && nuxt-module-build prepare && nuxi prepare playground"
+  },
+  "dependencies": {
+    "@nuxt/kit": "^3.0.0",
+    "vue-worker-kit": "^0.1.3"
+  },
+  "devDependencies": {
+    "@nuxt/module-builder": "^0.8.0",
+    "@nuxt/schema": "^3.0.0",
+    "nuxt": "^3.0.0"
+  },
+  "keywords": [
+    "nuxt",
+    "vue-worker-kit",
+    "web-worker",
+    "typescript",
+    "ssr"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/macrulezru/vue-worker-kit.git",
+    "directory": "nuxt-module"
+  }
+}

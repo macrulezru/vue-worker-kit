@@ -216,3 +216,19 @@ test('a DataCloneError surfaces as a WorkerError, not an unhandled postMessage e
 
   await expect(run([1])).rejects.toMatchObject({ name: 'DataCloneError' })
 })
+
+test('warmup() pre-creates the worker without running a task', async () => {
+  let createCount = 0
+  const { warmup, run } = useWorker<typeof import('./fixtures/sort.worker')>(() => {
+    createCount++
+    return createTestWorker(sortHandler)
+  })
+
+  expect(createCount).toBe(0)
+  await warmup()
+  expect(createCount).toBe(1)
+
+  const result = await run([3, 1, 2])
+  expect(result).toEqual([1, 2, 3])
+  expect(createCount).toBe(1)
+})

@@ -38,7 +38,13 @@ export interface ProgressResponseMessage {
   readonly value: number
 }
 
-export type WorkerToMainMessage = ResultResponseMessage | ErrorResponseMessage | ProgressResponseMessage
+export interface ChunkResponseMessage {
+  readonly type: 'chunk'
+  readonly id: WorkerRequestId
+  readonly chunk: unknown
+}
+
+export type WorkerToMainMessage = ResultResponseMessage | ErrorResponseMessage | ProgressResponseMessage | ChunkResponseMessage
 
 /** Minimal structural subset of DOM `Worker` — lets tests swap in a fake without a real OS thread. */
 export interface WorkerLike {

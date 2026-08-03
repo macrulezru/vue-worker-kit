@@ -31,6 +31,41 @@ describe('createWorkerPool', () => {
     expect(maxConcurrent).toBeLessThanOrEqual(2)
   })
 
+  test('map() supports per-item transfer and global signal', async () => {
+    const handler = async (input: { id: number; buffer: ArrayBuffer }): Promise<number> => {
+      return input.buffer.byteLength + input.id
+    }
+
+    const pool = createWorkerPool<FixtureModule<{ id: number; buffer: ArrayBuffer }, number>>(
+      () => createTestWorker(handler),
+      { size: 2 },
+    )
+
+    const buffers = [new ArrayBuffer(10), new ArrayBuffer(20), new ArrayBuffer(30)]
+    const items = buffers.map((buf, i) => ({ id: i, buffer: buf }))
+    const transferFn = (item: { id: number; buffer: ArrayBuffer }) => [item.buffer]
+
+    const results = await pool.map(items, { transfer: transferFn })
+
+    expect(results).toEqual([10, 21, 32])
+  })
+
+  test('warmup() pre-creates all workers up to size', async () => {
+    let createCount = 0
+    const handler = async () => 1
+    const pool = createWorkerPool<FixtureModule<undefined, number>>(
+      () => {
+        createCount++
+        return createTestWorker(handler)
+      },
+      { size: 3 },
+    )
+
+    expect(createCount).toBe(0)
+    await pool.warmup()
+    expect(createCount).toBe(3)
+  })
+
   test('size defaults to navigator.hardwareConcurrency when not specified', () => {
     const pool = createWorkerPool<FixtureModule<undefined, number>>(() => createTestWorker(() => 1), {})
     expect(pool.size).toBe(navigator.hardwareConcurrency)
