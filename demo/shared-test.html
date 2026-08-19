@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>useSharedWorker — real-browser check</title>
+</head>
+<body>
+  <pre id="status">connecting…</pre>
+  <script type="module">
+    import { useSharedWorker } from 'vue-worker-kit/shared'
+
+    const { run, connect, disconnect, portCount, error } = useSharedWorker(
+      () => new SharedWorker(new URL('./src/workers/shared-echo.worker.ts', import.meta.url), { type: 'module', name: 'shared-test' }),
+    )
+
+    window.__sharedWorkerTest = { run, connect, disconnect, portCount, error }
+
+    connect()
+
+    function render() {
+      document.getElementById('status').textContent = JSON.stringify({
+        portCount: portCount.value,
+        error: error.value?.message ?? null,
+      })
+    }
+    render()
+    setInterval(render, 50)
+  </script>
+</body>
+</html>

@@ -9,6 +9,8 @@
   />
 </div>
 
+[![CI](https://github.com/macrulezru/vue-worker-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/macrulezru/vue-worker-kit/actions/workflows/ci.yml)
+
 Type-safe Web Worker composables for Vue 3 — `useWorker()`, a worker pool, and a reactive `useWorkerComputed()`, with input/output types inferred straight from the worker file itself. Zero runtime dependencies beyond Vue.
 
 ---
@@ -18,6 +20,7 @@ Type-safe Web Worker composables for Vue 3 — `useWorker()`, a worker pool, and
 - [The problem](#the-problem)
 - [`async`/`await` vs. a real thread](#asyncawait-vs-a-real-thread)
 - [Quick start](#quick-start)
+- [Demo](#demo)
 - [How the type inference works](#how-the-type-inference-works)
 - [API reference](#api-reference)
   - [`defineWorkerHandler()`](#defineworkerhandler)
@@ -25,13 +28,10 @@ Type-safe Web Worker composables for Vue 3 — `useWorker()`, a worker pool, and
   - [`createWorkerPool()` / `useWorkerPool()`](#createworkerpool--useworkerpool)
   - [`useWorkerComputed()`](#useworkercomputed)
   - [`useSharedWorker()`](#usesharedworker)
-  - [`useWasmBridge()`](#usewasmbriage)
   - [Devtools](#devtools)
-  - [Native Vue Devtools Plugin](#native-vue-devtools-plugin)
 - [Advanced features](#advanced-features)
   - [Transferables](#transferables)
   - [Streaming / Chunked Results](#streaming--chunked-results)
-  - [Batch API](#batch-api)
   - [Cancellation](#cancellation)
   - [Retry Strategy with Backoff](#retry-strategy-with-backoff)
   - [Memoization / Result Cache](#memoization--result-cache)
@@ -96,6 +96,17 @@ const sorted = await run(hugeArray, { transfer: [hugeArray.buffer] })
 // sorted: number[] — inferred from heavy-sort.worker.ts, no generic annotation needed
 ```
 
+## Demo
+
+An interactive demo (`demo/`) covers every composable against a real browser, not just unit tests: `useWorker` vs. main-thread with a "longest UI freeze" metric (not a completion-time race — see [`async`/`await` vs. a real thread](#asyncawait-vs-a-real-thread) for why that would be misleading), transferables, real parallel speedup via `createWorkerPool`, `useWorkerComputed`, error handling, and `useSharedWorker`. For the last one, open a second tab from inside the demo: `portCount` updates live in both, and a `workerInstanceId` — generated once by the worker itself, not per tab — matches in both, concrete proof they share one worker instance.
+
+```bash
+git clone https://github.com/macrulezru/vue-worker-kit.git
+cd vue-worker-kit/demo
+npm install
+npm run dev
+```
+
 ## How the type inference works
 
 `typeof import('./heavy-sort.worker')` is a **type-only** expression — TypeScript erases it at compile time. It does not import the worker file's code into the main bundle; the worker is only ever loaded via `new URL(..., import.meta.url)`, as its own chunk. `defineWorkerHandler()` returns a phantom-typed marker (`__input`/`__output` fields that never exist at runtime); `useWorker`/`createWorkerPool` read `In`/`Out` off of that marker through a conditional type. The result: `run()`'s signature is exactly `(input: In, options?: RunOptions) => Promise<Out>`, without either side writing a manual generic for the data shape.
@@ -120,8 +131,10 @@ export default defineWorkerHandler(async (input: In, ctx: WorkerContext): Promis
 |---|---|---|
 | `signal` | `AbortSignal` | Aborted when the task is cancelled from the main thread — checking it is optional, cancellation is cooperative |
 | `reportProgress(value)` | `(0..1) => void` | Sends progress to the main thread, throttled to ~20 messages/sec |
+| `transfer(...transferables)` | `(...Transferable[]) => void` | Marks objects to send back zero-copy with the result instead of structured-clone copying — see [Transferables](#transferables) |
+| `reportChunk(chunk)` | `(chunk: unknown) => void` | Sends an intermediate result, unthrottled — see [Streaming / Chunked Results](#streaming--chunked-results) |
 
-`defineWorkerHandler` only starts the message loop when it actually runs inside a `WorkerGlobalScope` (checked via `self instanceof WorkerGlobalScope`). Importing the file anywhere else — e.g. accidentally from the main bundle — is a no-op.
+`defineWorkerHandler` only starts a message loop when it actually runs inside a dedicated- or shared-worker global scope (checked via `self instanceof DedicatedWorkerGlobalScope`/`SharedWorkerGlobalScope`). Importing the file anywhere else — e.g. accidentally from the main bundle — is a no-op. The same file works for both `new Worker(...)` (via `useWorker()`/`createWorkerPool()`) and `new SharedWorker(...)` (via `useSharedWorker()`) — see [`useSharedWorker()`](#usesharedworker).
 
 You don't need to call `reportProgress(1)` yourself right before returning — a final, unthrottled progress update of `1` is always sent right before the result, regardless of what your last throttled call was. Without this, a handler that only reports at periodic checkpoints (e.g. every 5%) could leave the main thread's `progress` stuck below `1` forever, since the checkpoint closest to the end can land inside the previous call's throttle window and get silently dropped.
 
@@ -147,7 +160,10 @@ Options:
 |---|---|---|---|
 | `idleTimeout` | `number \| false` | `30000` | Worker self-terminates after this many ms idle (frees memory); the next `run()` transparently recreates it |
 | `retries` | `number` | `0` | Automatic retries on rejection — never applied to cancellations (`AbortError` always rejects immediately) |
+| `retryDelay` | `(attempt: number) => number` | — | Delay before each retry — see [Retry Strategy with Backoff](#retry-strategy-with-backoff) |
 | `hardCancelOnAbort` | `boolean` | `false` | On `abort()`, terminate and recreate the worker immediately instead of waiting for cooperative `ctx.signal` handling |
+| `cache` | `{ cache: 'lru', maxCacheSize?: number }` | — | Memoizes results by input — see [Memoization / Result Cache](#memoization--result-cache) |
+| `streaming` | `boolean` | `false` | Enables `ctx.reportChunk()`/`chunks` — see [Streaming / Chunked Results](#streaming--chunked-results) |
 
 Returns:
 
@@ -155,6 +171,7 @@ Returns:
 - `isRunning: ComputedRef<boolean>`, `progress: ShallowRef<number>`, `error: ShallowRef<WorkerError | null>`
 - `cancel()` — aborts the current `run()` call(s) that didn't receive their own `signal`
 - `warmup(): Promise<void>` — pre-creates the worker without executing a task (useful for avoiding cold-start latency)
+- `chunks?: ShallowRef<unknown[]>` — present only when `streaming: true` (see [Streaming / Chunked Results](#streaming--chunked-results))
 - automatic `terminate()` on `onScopeDispose` when called inside an active effect scope
 
 `run()`'s input is passed through `toRaw()` before being posted — a `ref`/`reactive` value read straight off a component (`() => list.value`) is not structured-cloneable as a live Proxy, so the raw snapshot is what actually gets sent.
@@ -216,7 +233,7 @@ Race handling: every run gets an internal generation number. If the source chang
 
 ### `useSharedWorker()`
 
-`vue-worker-kit/shared` — Multi-tab applications can reuse a single `SharedWorker` across browser tabs/windows.
+`vue-worker-kit/shared` — reuses a single `SharedWorker` across every tab/window of the same origin that connects to it, instead of one worker per tab.
 
 ```ts
 import { useSharedWorker } from 'vue-worker-kit/shared'
@@ -225,85 +242,30 @@ const { run, connect, disconnect, portCount } = useSharedWorker<typeof import('.
   () => new SharedWorker(new URL('./shared.worker.ts', import.meta.url), { type: 'module' }),
 )
 
-// Connect to the shared worker (call when tab becomes visible)
+// Optional — run() connects lazily on its own; call this to connect ahead of time.
 connect()
 
-// Use like regular useWorker
 const result = await run(data)
 
-// Disconnect when tab is hidden (optional, keeps worker alive for other tabs)
+// Closes this tab's port. Does NOT terminate the worker — other tabs stay connected to it.
 disconnect()
 ```
 
-- `connect()` — establishes connection to the SharedWorker, increments port count
-- `disconnect()` — closes this tab's port without terminating the worker (other tabs remain connected)
-- `portCount: Ref<number>` — number of active connections (tabs)
-- Automatically reconnects if the shared worker terminates
-- **Browser support**: Chrome, Firefox, Edge Desktop. ❌ Not supported in Safari iOS or Chrome Android
+- `connect(): void` — establishes this tab's connection (idempotent; `run()` also calls it lazily if you skip this)
+- `disconnect(): void` — closes this tab's port only; the shared worker keeps running for every other connected tab. Called automatically on `onScopeDispose` when used inside `setup()`.
+- `portCount: Ref<number>` — number of tabs the worker has seen connect, as last broadcast by the worker itself. **Best-effort**: a `MessagePort` has no platform-level "the other end went away" notification, so this only decrements on a cooperative `disconnect()` call — a crashed or force-closed tab is never subtracted.
+- `run(input, options?)`, `isRunning`, `progress`, `error`, `cancel()` — same semantics as `useWorker()`
+- Options: `retries`, `retryDelay`, `cache`, `streaming` — same as `useWorker()`. There is no `idleTimeout`/`hardCancelOnAbort`: a shared worker's lifetime isn't owned by any single tab, so `connect()`/`disconnect()` is the whole lifecycle story, not an idle timer.
+- **Browser support**: Chrome, Firefox, Edge Desktop. ❌ Not supported in Safari iOS or Chrome Android — no `SharedWorker` constructor exists there at all. `connect()`/`run()` throw `WorkerUnavailableError` in that case, the same way `useWorker()` does under SSR.
 
-Worker-side handler uses the same `defineWorkerHandler()`:
+The worker-side file is a normal `defineWorkerHandler()` module — the exact same file works with both `new Worker(...)` (via `useWorker()`) and `new SharedWorker(...)` (via `useSharedWorker()`); it doesn't need to know which one it's running under.
 
 ```ts
 // shared.worker.ts
 import { defineWorkerHandler } from 'vue-worker-kit/worker'
 
 export default defineWorkerHandler(async (data: In, ctx) => {
-  // Same API as regular workers
   return processData(data)
-})
-```
-
-### `useWasmBridge()`
-
-`vue-worker-kit/wasm` — Composable wrapper for WebAssembly modules running inside workers with `SharedArrayBuffer` support.
-
-```ts
-import { useWasmBridge } from 'vue-worker-kit/wasm'
-
-const { run, load, isLoaded, memory } = useWasmBridge<typeof import('./wasm.worker')>(
-  () => new Worker(new URL('./wasm.worker.ts', import.meta.url), { type: 'module' }),
-  async () => {
-    const wasmModule = await WebAssembly.compileStreaming(fetch('/my-module.wasm'))
-    return WebAssembly.instantiate(wasmModule, {
-      env: { memory: new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true }) }
-    })
-  },
-)
-
-// Load WASM module (called automatically on first run if not pre-loaded)
-await load()
-
-// Run WASM-powered computation
-const result = await run(inputData, { transfer: [inputData.buffer] })
-
-// Access shared memory directly (zero-copy)
-const view = new Uint8Array(memory.buffer)
-```
-
-- `load(): Promise<void>` — pre-loads the WASM module (optional, happens automatically on first `run()`)
-- `isLoaded: Ref<boolean>` — indicates if WASM module is ready
-- `memory: SharedArrayBuffer | null` — direct access to WASM memory for zero-copy operations
-- Supports `SharedArrayBuffer` for multi-threaded WASM scenarios
-- Automatic cleanup on scope disposal
-
-Worker-side setup:
-
-```ts
-// wasm.worker.ts
-import { defineWorkerHandler } from 'vue-worker-kit/worker'
-
-let wasmInstance: WebAssembly.Instance
-
-self.onmessage = async (event) => {
-  if (event.data.type === 'init') {
-    wasmInstance = event.data.instance
-  }
-}
-
-export default defineWorkerHandler(async (input: In, ctx) => {
-  // Access WASM exports
-  const { process } = wasmInstance.exports
-  return process(input)
 })
 ```
 
@@ -314,7 +276,7 @@ export default defineWorkerHandler(async (input: In, ctx) => {
 ```ts
 import { createWorkerActivityMonitor, WorkerActivityPanel } from 'vue-worker-kit/devtools'
 
-const monitor = createWorkerActivityMonitor(pool) // or a single useWorker() instance
+const monitor = createWorkerActivityMonitor(pool) // or a single useWorker()/useSharedWorker() instance
 ```
 
 ```vue
@@ -322,30 +284,6 @@ const monitor = createWorkerActivityMonitor(pool) // or a single useWorker() ins
 ```
 
 Shows busy/idle worker counts, queue length, average task time, and the last N errors — reactive, driven by an internal subscription (no polling).
-
-### Native Vue Devtools Plugin
-
-For deeper integration with `@vue/devtools-api`, use the official plugin:
-
-```ts
-// main.ts
-import { createApp } from 'vue'
-import { VueWorkerKitDevtoolsPlugin } from 'vue-worker-kit/plugin'
-import App from './App.vue'
-
-const app = createApp(App)
-app.use(VueWorkerKitDevtoolsPlugin)
-app.mount('#app')
-```
-
-Features:
-- **Timeline traces** — see worker task start/end events in Vue Devtools timeline
-- **Inspectable state** — view active workers, queue, and stats in custom inspector tab
-- **Performance profiling** — measure task duration with high-resolution timestamps
-- **Error tracking** — click through from devtools to error source
-- **Multi-app support** — works with multiple Vue app instances
-
-The plugin automatically detects all `useWorker()`, `createWorkerPool()`, and `useSharedWorker()` instances in your app.
 
 ## Advanced features
 
@@ -417,40 +355,10 @@ export default defineWorkerHandler(async (items: LargeDataset[], ctx) => {
 })
 ```
 
-- `chunks: ShallowRef<any[]>` — reactive array of all reported chunks
+- `chunks: ShallowRef<unknown[]>` — reactive array of all reported chunks
 - `ctx.reportChunk(data)` — sends partial result to main thread (unthrottled)
 - Chunks accumulate in order; final result is separate from chunks
 - Useful for progressive rendering, real-time updates, or memory-efficient processing
-
-### Batch API
-
-For scenarios with thousands of small tasks, batch processing reduces `postMessage` overhead:
-
-```ts
-import { createWorkerPool } from 'vue-worker-kit/pool'
-
-const pool = createWorkerPool<typeof import('./task.worker')>(() =>
-  new Worker(new URL('./task.worker.ts', import.meta.url), { type: 'module' }),
-  { size: 4 },
-)
-
-// Process 10k small tasks efficiently
-const results = await pool.runBatch(inputs, {
-  batchSize: 50,        // Send 50 tasks per message
-  concurrency: 4,       // 4 workers × 50 batch = 200 tasks in flight
-  transfer: (batch) => batch.flatMap(item => [item.buffer]),
-  signal: abortController.signal,
-})
-```
-
-- `pool.runBatch(items, options?)` — processes array in batches
-- Options:
-  - `batchSize?: number` — items per batch (default: `10`)
-  - `concurrency?: number` — parallel batches (default: `pool.size`)
-  - `transfer?: (batch: T[]) => Transferable[]` — per-batch transfer function
-  - `signal?: AbortSignal` — global cancellation
-- Reduces message overhead by ~90% for 10k+ tasks vs individual `run()` calls
-- Results maintain input order
 
 ## Cancellation
 
@@ -507,44 +415,28 @@ For pure worker functions (same input → same output), enable LRU caching:
 ```ts
 import { useWorker } from 'vue-worker-kit'
 
-const { run, cacheStats } = useWorker<typeof import('./hash.worker')>(
+const { run } = useWorker<typeof import('./hash.worker')>(
   () => new Worker(new URL('./hash.worker.ts', import.meta.url), { type: 'module' }),
   {
-    cache: 'lru',
-    maxCacheSize: 100,        // Keep last 100 results
-    cacheKey: (input) => JSON.stringify(input), // Custom key function (optional)
+    cache: { cache: 'lru', maxCacheSize: 100 }, // keep the last 100 results
   },
 )
 
-// First call - executes in worker
+// First call — executes in worker
 const hash1 = await run(data)
 
-// Second call with same data - returns cached result instantly
-const hash2 = await run(data) // hash1 === hash2, no worker invocation
-
-// Check cache performance
-console.log(cacheStats) // { hits: 1, misses: 1, size: 1 }
+// Second call with the same input (compared via JSON.stringify) — returns the cached
+// result instantly, no worker invocation, no postMessage round-trip
+const hash2 = await run(data) // hash1 === hash2
 ```
 
-Options:
-- `cache: 'lru' | false` — enable LRU cache (default: `false`)
-- `maxCacheSize: number` — max entries before evicting oldest (default: `50`)
-- `cacheKey: (input: In) => string` — custom serialization for cache key (default: `JSON.stringify`)
-- `cacheStats: Ref<{ hits: number; misses: number; size: number }>` — reactive cache metrics
+Options (`cache: UseWorkerCacheOptions`):
+- `cache: 'lru'` — enable the LRU cache (unset/omitted disables it)
+- `maxCacheSize: number` — max entries before evicting the oldest (default: `50`)
 
-Works with `useWorkerComputed()` as well:
+The cache key is `JSON.stringify(input)` (exported as `createCacheKey()` if you want to reason about collisions yourself) — inputs that stringify the same (including object key order) share a cache entry.
 
-```ts
-const sorted = useWorkerComputed<typeof import('./sort.worker')>(
-  () => new Worker(...),
-  () => list.value,
-  {
-    debounce: 150,
-    cache: 'lru',
-    maxCacheSize: 20,
-  },
-)
-```
+`useWorkerComputed()` doesn't have a `cache` option — its own generation-number mechanism already discards stale/superseded results, and its `source()` typically produces a fresh input on every reactive tick anyway, so key-based memoization wouldn't have much to hit.
 
 ## Error handling
 
@@ -598,28 +490,18 @@ No `worker-loader`/`worker-plugin` or other webpack-era workarounds needed — t
 
 ## Benchmark Suite
 
-Automated benchmarks comparing main thread vs. single worker vs. worker pool for common scenarios:
+`npm run benchmark` (`benchmark/heavy-computation.bench.ts`, via [tinybench](https://github.com/tinylibs/tinybench)) compares a CPU-bound task (naive recursive `fib(30..34)`) run on the main thread vs. a single worker thread vs. a 4-thread pool — via `node:worker_threads`, since this runs under Node (`tsx`), not a browser. It's a sanity check of the pool's real parallel speedup, not a benchmark of this package's own composables (those add negligible overhead on top of raw `postMessage`, which is what's actually being measured here).
 
-```bash
-npm run benchmark
-```
+Example run on this machine (results vary by hardware/load — run it yourself for numbers that mean anything on your machine):
 
-Results (M1 MacBook Pro, Chrome 120):
+| Task | Ops/sec | Avg time |
+|---|---|---|
+| Main thread | 7.4 | 135ms |
+| Single worker thread | 5.8 | 173ms |
+| Pool of 4 worker threads | 9.1 | 111ms |
 
-| Scenario | Main Thread | 1 Worker | Pool (4 workers) | Speedup |
-|----------|-------------|----------|------------------|---------|
-| Sort 1M numbers | 320ms | 340ms | 95ms | **3.4×** |
-| Image resize (100 × 2MB) | 2.1s | 2.3s | 620ms | **3.4×** |
-| SHA-256 hash (10k strings) | 890ms | 920ms | 245ms | **3.6×** |
-| CSV parse (50MB file) | 1.5s | 1.6s | **N/A** | — |
+Single-worker is slower than main thread here — expected: `postMessage`/thread-startup overhead on a task that isn't parallelized. The pool is faster because 8 tasks genuinely run across 4 threads at once, not because any one worker is faster than the main thread.
 
-Notes:
-- Pool shows **3-4× speedup** on 4-core machines (parallel execution across cores)
-- Single worker has ~5-10% overhead from `postMessage` + structured clone
-- For CPU-bound tasks, pool is always faster; for I/O-bound tasks, main thread may suffice
-- Warmup eliminates ~50-200ms cold-start latency (not included in above measurements)
-
-Run benchmarks on your target hardware with `npm run benchmark` for accurate numbers.
 ## Comparison
 
 `vue-worker` (latest `1.2.1`, published 2017) and `vue-web-workers` (latest `0.2.0`, published 2020, depends on `vue@^2.6.11` directly) are both effectively unmaintained Vue 2 plugins — verified against the npm registry, not from memory. [Comlink](https://github.com/GoogleChromeLabs/comlink) (`4.4.2`, still actively maintained, zero dependencies) is a solid, Vue-agnostic RPC layer.
@@ -628,10 +510,9 @@ Run benchmarks on your target hardware with `npm run benchmark` for accurate num
 |---|---|---|---|
 | Composition API | ✗ | — (not Vue-specific) | ✓ |
 | Typed input/output | ✗ | manual `wrap<T>()` | inferred from the worker file |
-| Worker pool | ✗ | ✗ | ✓ (`createWorkerPool`, `pool.map` with per-item transfer, `runBatch`) |
+| Worker pool | ✗ | ✗ | ✓ (`createWorkerPool`, `pool.map` with per-item transfer) |
 | Reactive computed-in-worker | ✗ | ✗ | ✓ (`useWorkerComputed`) |
 | SharedWorker (multi-tab) | ✗ | ✗ | ✓ (`useSharedWorker`) |
-| WASM bridge | ✗ | ✗ | ✓ (`useWasmBridge` with `SharedArrayBuffer`) |
 | Streaming results | ✗ | ✗ | ✓ (`ctx.reportChunk`, `chunks.value`) |
 | Cancellation | ✗ | ✗ | ✓ (`AbortSignal`, per-task + global for pool) |
 | Transferables | ✗ | ✓ (manual, both directions) | ✓ (`RunOptions.transfer` in, `ctx.transfer()` out, per-item for pool.map) |
@@ -639,7 +520,6 @@ Run benchmarks on your target hardware with `npm run benchmark` for accurate num
 | Retry with backoff | ✗ | ✗ | ✓ (configurable delay function) |
 | Result caching (LRU) | ✗ | ✗ | ✓ (`cache: 'lru'`, `maxCacheSize`) |
 | SSR-safe | ✗ | — | ✓ |
-| Native Devtools plugin | ✗ | ✗ | ✓ (timeline traces, inspector tab) |
 | Dependencies | — | none | none beyond `vue` |
 
 ---

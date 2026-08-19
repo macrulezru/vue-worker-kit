@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useWorker } from 'vue-worker-kit'
 import { useWorkerPool } from 'vue-worker-kit/pool'
 import { useWorkerComputed } from 'vue-worker-kit/computed'
+import { useSharedWorker } from 'vue-worker-kit/shared'
 import { createWorkerActivityMonitor, WorkerActivityPanel } from 'vue-worker-kit/devtools'
 import { insertionSort } from './lib/insertionSort'
 import { countPrimesInRange } from './lib/countPrimes'
@@ -214,6 +215,48 @@ async function triggerError() {
     // surfaced via throwingWorker.error below
   }
 }
+
+// ---- 6. useSharedWorker — one worker, every tab -----------------------------------------
+// Same defineWorkerHandler() module as every other section, loaded via `new SharedWorker(...)`
+// instead of `new Worker(...)`. The worker generates a random id ONCE, at
+// SharedWorkerGlobalScope startup — not per connecting tab — so every tab's result carries the
+// same id. That's the concrete, checkable proof that every tab really is talking to one shared
+// worker instance, not a plain per-tab worker each: open a second tab (button below) and run
+// the task there too — the id matches, portCount reads 2 in both tabs, and disconnecting one
+// tab never resets or kills the worker for the other.
+const sharedWorker = useSharedWorker<typeof import('./workers/shared-echo.worker')>(() =>
+  new SharedWorker(new URL('./workers/shared-echo.worker.ts', import.meta.url), {
+    type: 'module',
+    name: 'vue-worker-kit-demo-shared',
+  }),
+)
+const sharedMonitor = createWorkerActivityMonitor(sharedWorker)
+const sharedInputValue = ref(21)
+const sharedResult = ref<{ doubled: number; workerInstanceId: string } | null>(null)
+// Purely local UI state for this tab's own button — `useSharedWorker` intentionally has no
+// "am I connected" flag of its own, since it's not that different a question from "have I
+// called run() yet" once you're lazily auto-connecting; `portCount` is the real shared state.
+const sharedConnectedHere = ref(false)
+
+sharedWorker.connect()
+sharedConnectedHere.value = true
+
+async function runSharedTask() {
+  sharedResult.value = await sharedWorker.run({ value: sharedInputValue.value })
+}
+
+function toggleSharedConnection() {
+  if (sharedConnectedHere.value) {
+    sharedWorker.disconnect()
+  } else {
+    sharedWorker.connect()
+  }
+  sharedConnectedHere.value = !sharedConnectedHere.value
+}
+
+function openAnotherTab() {
+  window.open(location.href, '_blank')
+}
 </script>
 
 <template>
@@ -351,13 +394,46 @@ async function triggerError() {
       </p>
     </section>
 
-    <section style="border: 1px solid #8883; border-radius: 8px; padding: 16px">
+    <section style="border: 1px solid #8883; border-radius: 8px; padding: 16px; margin-bottom: 20px">
       <h2>5. Error handling</h2>
       <button @click="triggerError">Trigger worker error</button>
       <pre v-if="throwingWorker.error.value" style="color: #e5484d; white-space: pre-wrap">{{
         throwingWorker.error.value.message
       }}
 workerStack: {{ throwingWorker.error.value.workerStack }}</pre>
+    </section>
+
+    <section style="border: 1px solid #8883; border-radius: 8px; padding: 16px">
+      <h2>6. useSharedWorker — one worker, every tab</h2>
+      <p style="opacity: 0.75; margin-top: -4px">
+        A <code>SharedWorker</code> is reused across every tab/window of this origin that
+        connects to it — click "open another tab" below, then run the task in both. The
+        <strong><code>workerInstanceId</code> will match</strong> in both tabs: it's generated
+        once when the worker itself starts, not once per tab, so an identical id is the concrete
+        proof they're talking to the same worker instance, not one each.
+      </p>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px">
+        <button @click="openAnotherTab">Open another tab</button>
+        <label>
+          value:
+          <input v-model.number="sharedInputValue" type="number" style="width: 70px" />
+        </label>
+        <button @click="runSharedTask">Run via shared worker</button>
+        <button @click="toggleSharedConnection">
+          {{ sharedConnectedHere ? 'Disconnect this tab' : 'Reconnect this tab' }}
+        </button>
+      </div>
+      <p>
+        <strong>{{ sharedWorker.portCount.value }}</strong> tab(s) currently connected to this
+        shared worker (updates live as other tabs connect/disconnect).
+      </p>
+      <p v-if="sharedResult">
+        doubled={{ sharedResult.doubled }}, workerInstanceId=<code>{{ sharedResult.workerInstanceId }}</code>
+      </p>
+      <p v-if="sharedWorker.error.value" style="color: #e5484d">
+        Error: {{ sharedWorker.error.value.message }}
+      </p>
+      <WorkerActivityPanel :monitor="sharedMonitor" />
     </section>
   </main>
 </template>

@@ -13,6 +13,9 @@ for (const name of ['structuredClone', 'AbortController', 'DOMException'] as con
 if (typeof globalThis.Worker === 'undefined') {
   ;(globalThis as { Worker?: unknown }).Worker = class StubWorker {}
 }
+if (typeof globalThis.SharedWorker === 'undefined') {
+  ;(globalThis as { SharedWorker?: unknown }).SharedWorker = class StubSharedWorker {}
+}
 
 // Provide a mock `navigator` for tests that depend on `navigator.hardwareConcurrency`.
 // In real browsers this reflects available logical cores; here we emulate a typical 4-core machine.

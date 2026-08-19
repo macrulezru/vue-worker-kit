@@ -1,14 +1,12 @@
 import { computed, getCurrentScope, onScopeDispose, ref, shallowRef } from 'vue'
-import type { ComputedRef, ShallowRef } from 'vue'
+import type { ComputedRef, Ref, ShallowRef } from 'vue'
 import { WorkerError, WorkerUnavailableError, isAbortError, toAbortError } from '../errors'
 import { attachActivityBus, createActivityBus } from '../internal/activityBus'
 import { createWorkerClient, type WorkerClient } from '../internal/workerClient'
-import type { WorkerLike } from '../protocol'
+import type { DisconnectMessage, SharedWorkerToMainMessage, WorkerLike } from '../protocol'
 import type { RunOptions, WorkerModuleInput, WorkerModuleOutput, UseWorkerCacheOptions } from '../types'
 
 export interface UseSharedWorkerOptions {
-  /** Milliseconds of idle time before the worker self-terminates; `false` disables it. Default `30000`. */
-  idleTimeout?: number | false
   /** Automatic retries on rejection, not applied to cancellations. Default `0`. */
   retries?: number
   /** Delay function for exponential backoff. */
@@ -17,29 +15,36 @@ export interface UseSharedWorkerOptions {
   cache?: UseWorkerCacheOptions
   /** Enable streaming mode with chunked results. */
   streaming?: boolean
-  /** Unique name for the SharedWorker - multiple tabs with same name share the worker */
-  name?: string
 }
 
 export interface UseSharedWorkerReturn<In, Out> {
   run(input: In, options?: RunOptions): Promise<Out>
+  /** Establishes this tab's connection to the shared worker (idempotent). `run()` calls it lazily if you don't. */
+  connect(): void
+  /** Closes this tab's port without terminating the worker — other tabs stay connected. */
+  disconnect(): void
+  /** Number of tabs currently connected, as last reported by the worker (see the caveat on `attachSharedWorkerProtocol`: a tab that disappears without calling `disconnect()` — a crash, a force-close — is never subtracted). */
+  portCount: Ref<number>
   isRunning: ComputedRef<boolean>
   progress: ShallowRef<number>
   error: ShallowRef<WorkerError | null>
   cancel(): void
-  warmup(): Promise<void>
   chunks?: ShallowRef<unknown[]>
 }
 
 /**
- * Composable for SharedWorker - allows reuse of a single worker across multiple browser tabs.
- * Note: Not supported in Safari iOS and Chrome Android.
+ * Composable for `SharedWorker` — reuses a single worker across every tab/window of the same
+ * origin that connects to it, instead of one worker per tab. **Not supported in Safari iOS or
+ * Chrome Android** — no `SharedWorker` constructor exists there at all; `connect()`/`run()`
+ * throw `WorkerUnavailableError` in that case, the same way `useWorker()` does under SSR.
+ *
+ * The worker-side file is a normal `defineWorkerHandler()` module — the same file can be used
+ * with `useWorker()` (via `new Worker(...)`) or `useSharedWorker()` (via `new SharedWorker(...)`).
  */
 export function useSharedWorker<TModule>(
   factory: () => SharedWorker,
   options: UseSharedWorkerOptions = {},
 ): UseSharedWorkerReturn<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>> {
-  const idleTimeout = options.idleTimeout ?? 30_000
   const retries = options.retries ?? 0
   const retryDelay = options.retryDelay
   const cacheOptions = options.cache
@@ -47,10 +52,8 @@ export function useSharedWorker<TModule>(
 
   let worker: SharedWorker | null = null
   let client: WorkerClient | null = null
-  let idleTimer: ReturnType<typeof setTimeout> | undefined
   const internalControllers = new Set<AbortController>()
 
-  // LRU cache for memoization
   const cache = cacheOptions?.cache === 'lru' ? new Map<string, unknown>() : null
   const maxCacheSize = cacheOptions?.maxCacheSize ?? 50
 
@@ -58,55 +61,37 @@ export function useSharedWorker<TModule>(
   const isRunning = computed(() => activeCount.value > 0)
   const progress = shallowRef(0)
   const error = shallowRef<WorkerError | null>(null)
+  const portCount = ref(0)
   const chunks = streaming ? shallowRef<unknown[]>([]) : undefined
   const activityBus = createActivityBus()
-
-  function clearIdleTimer(): void {
-    if (idleTimer !== undefined) {
-      clearTimeout(idleTimer)
-      idleTimer = undefined
-    }
-  }
-
-  function scheduleIdleTimer(): void {
-    clearIdleTimer()
-    if (idleTimeout === false || activeCount.value > 0) return
-    idleTimer = setTimeout(() => terminate(), idleTimeout)
-  }
-
-  function terminate(): void {
-    clearIdleTimer()
-    client?.dispose(toAbortError('SharedWorker terminated'))
-    if (worker) {
-      worker.port.postMessage({ type: 'terminate' })
-      worker.port.close()
-    }
-    worker = null
-    client = null
-  }
 
   function ensureClient(): WorkerClient {
     if (typeof SharedWorker === 'undefined') {
       throw new WorkerUnavailableError('SharedWorker is not supported in this environment')
     }
-    clearIdleTimer()
-    if (!client) {
-      worker = factory()
-      // SharedWorker uses port for communication
-      const portLike: WorkerLike = {
-        postMessage: (message, transfer) => worker!.port.postMessage(message, transfer ?? []),
-        terminate: () => worker!.port.close(),
-        onmessage: null,
-        onerror: null,
-      }
-      client = createWorkerClient(portLike)
-      // Forward messages from port to client
-      worker.port.onmessage = (event) => {
-        if (client && portLike.onmessage) {
-          portLike.onmessage(event as MessageEvent)
-        }
-      }
+    if (client) return client
+
+    worker = factory()
+    const activeWorker = worker
+    const portLike: WorkerLike = {
+      postMessage: (message, transfer) => activeWorker.port.postMessage(message, transfer ?? []),
+      // A SharedWorker's port can't be "terminated" from one tab — that would kill it for every
+      // other tab still connected. disconnect() is the real, cooperative teardown for this tab.
+      terminate: () => {},
+      onmessage: null,
+      onerror: null,
     }
+    client = createWorkerClient(portLike)
+
+    worker.port.onmessage = (event: MessageEvent<SharedWorkerToMainMessage>) => {
+      if (event.data.type === 'portCount') {
+        portCount.value = event.data.count
+        return
+      }
+      portLike.onmessage?.(event)
+    }
+    worker.port.start()
+
     return client
   }
 
@@ -230,7 +215,6 @@ export function useSharedWorker<TModule>(
       activeCount.value--
       activityBus.emit.taskEnd(Date.now() - startedAt)
       if (internalController) internalControllers.delete(internalController)
-      scheduleIdleTimer()
     }
   }
 
@@ -238,21 +222,34 @@ export function useSharedWorker<TModule>(
     for (const controller of internalControllers) controller.abort()
   }
 
-  async function warmup(): Promise<void> {
+  function connect(): void {
     ensureClient()
   }
 
+  function disconnect(): void {
+    if (!client || !worker) return
+    const message: DisconnectMessage = { type: 'disconnect' }
+    worker.port.postMessage(message)
+    client.dispose(toAbortError('SharedWorker port disconnected'))
+    worker.port.close()
+    client = null
+    worker = null
+    portCount.value = 0
+  }
+
   if (getCurrentScope()) {
-    onScopeDispose(() => terminate())
+    onScopeDispose(() => disconnect())
   }
 
   const result: UseSharedWorkerReturn<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>> = {
     run: run as UseSharedWorkerReturn<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>['run'],
+    connect,
+    disconnect,
+    portCount,
     isRunning,
     progress,
     error,
     cancel,
-    warmup,
   }
   if (chunks) {
     result.chunks = chunks as ShallowRef<unknown[]>

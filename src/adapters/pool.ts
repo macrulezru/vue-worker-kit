@@ -4,7 +4,7 @@ import { WorkerUnavailableError, toAbortError } from '../errors'
 import { attachActivityBus, createActivityBus } from '../internal/activityBus'
 import { createWorkerClient, type WorkerClient } from '../internal/workerClient'
 import type { WorkerLike } from '../protocol'
-import type { RunOptions, WorkerModuleInput, WorkerModuleOutput, WorkerBatchOptions } from '../types'
+import type { RunOptions, WorkerModuleInput, WorkerModuleOutput } from '../types'
 
 export interface WorkerPoolOptions {
   /**
@@ -42,8 +42,6 @@ export interface WorkerMapOptions<T = unknown> {
 export interface WorkerPool<In, Out> {
   run(input: In, options?: RunOptions): Promise<Out>
   map(items: In[], options?: WorkerMapOptions<In>): Promise<Out[]>
-  /** Run items in batches to reduce postMessage overhead for many small tasks. */
-  runBatch(items: In[], options?: WorkerBatchOptions): Promise<Out[]>
   readonly stats: ComputedRef<WorkerPoolStats>
   readonly size: number
   terminate(): void
@@ -191,45 +189,9 @@ export function createWorkerPool<TModule>(
     return results
   }
 
-  async function runBatch(items: unknown[], batchOptions: WorkerBatchOptions = {}): Promise<unknown[]> {
-    const batchSize = batchOptions.batchSize ?? 50
-    const signal = batchOptions.signal
-    const results: unknown[] = []
-
-    // Split items into batches
-    const batches: unknown[][] = []
-    for (let i = 0; i < items.length; i += batchSize) {
-      batches.push(items.slice(i, i + batchSize))
-    }
-
-    // Process batches concurrently using the pool
-    const batchPromises = batches.map(async (batch) => {
-      // Send entire batch as a single task
-      const batchResult = await run(batch, { signal })
-      return batchResult as unknown[]
-    })
-
-    const batchResults = await Promise.all(batchPromises)
-    // Flatten results
-    for (const batchResult of batchResults) {
-      results.push(...batchResult)
-    }
-
-    return results
-  }
-
   async function warmup(): Promise<void> {
     if (terminated) return
-    const warmupPromises: Promise<void>[] = []
-    for (let i = slots.length; i < size; i++) {
-      const promise = new Promise<void>((resolve) => {
-        const slot = createSlot()
-        slot.busy = false
-        resolve()
-      })
-      warmupPromises.push(promise)
-    }
-    await Promise.all(warmupPromises)
+    while (slots.length < size) createSlot()
   }
 
   function terminate(): void {
@@ -249,7 +211,6 @@ export function createWorkerPool<TModule>(
     {
       run: run as WorkerPool<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>['run'],
       map: map as WorkerPool<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>['map'],
-      runBatch: runBatch as WorkerPool<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>['runBatch'],
       stats,
       size,
       terminate,

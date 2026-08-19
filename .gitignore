@@ -1,3 +1,50 @@
-```
+# Dependencies
 node_modules/
-```
+demo/node_modules/
+
+# Build output
+dist/
+demo/dist/
+
+# Coverage
+coverage/
+
+# Vite cache
+.vite/
+**/.vite/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# TypeScript incremental
+*.tsbuildinfo
+
+# Vitest
+.vitest-results/
+
+# Machine-specific benchmark snapshot — numbers are meaningless outside the machine that ran them
+benchmark/results.json

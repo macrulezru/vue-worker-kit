@@ -1,5 +1,10 @@
-import { attachWorkerProtocol, type WorkerHandlerFn, type WorkerHandlerModule } from '../src/worker/defineWorkerHandler'
-import type { WorkerScopeLike } from '../src/protocol'
+import {
+  attachSharedWorkerProtocol,
+  attachWorkerProtocol,
+  type WorkerHandlerFn,
+  type WorkerHandlerModule,
+} from '../src/worker/defineWorkerHandler'
+import type { MessagePortLike, SharedWorkerScopeLike, WorkerScopeLike } from '../src/protocol'
 
 /** `typeof import('./x.worker')` shape, built from a raw handler function's In/Out types. */
 export type FixtureModule<In, Out> = { default: WorkerHandlerModule<In, Out> }
@@ -56,6 +61,43 @@ export function createCrashingTestWorker(message: string): Worker {
     terminate() {},
   }
   return fakeWorker as unknown as Worker
+}
+
+/**
+ * In-process stand-in for a `SharedWorker` + `SharedWorkerGlobalScope` pair. `scope.onconnect`
+ * is invoked once, synchronously, per call to the returned factory — mirroring one browser tab
+ * each calling `new SharedWorker(...)` and getting back its own `MessagePort` to the one shared
+ * worker-global instance behind `handler`. Every `postMessage` crosses through a real
+ * `structuredClone`, same rationale as `createTestWorker`.
+ */
+export function createTestSharedWorker<In, Out>(handler: WorkerHandlerFn<In, Out>): () => SharedWorker {
+  const scope: SharedWorkerScopeLike = { onconnect: null }
+  attachSharedWorkerProtocol(handler, scope)
+
+  return function factory(): SharedWorker {
+    const clientPort: MessagePortLike = {
+      onmessage: null,
+      postMessage(message, transfer) {
+        const cloned = structuredClone(message, transfer?.length ? { transfer } : undefined)
+        queueMicrotask(() => workerPort.onmessage?.({ data: cloned } as MessageEvent))
+      },
+      close() {},
+      start() {},
+    }
+    const workerPort: MessagePortLike = {
+      onmessage: null,
+      postMessage(message, transfer) {
+        const cloned = structuredClone(message, transfer?.length ? { transfer } : undefined)
+        queueMicrotask(() => clientPort.onmessage?.({ data: cloned } as MessageEvent))
+      },
+      close() {},
+      start() {},
+    }
+
+    scope.onconnect?.({ ports: [workerPort] })
+
+    return { port: clientPort } as unknown as SharedWorker
+  }
 }
 
 export function nextTick(): Promise<void> {

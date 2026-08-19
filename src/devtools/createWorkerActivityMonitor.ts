@@ -3,8 +3,12 @@ import type { ComputedRef } from 'vue'
 import { readActivityBus } from '../internal/activityBus'
 import type { WorkerPool } from '../adapters/pool'
 import type { UseWorkerReturn } from '../useWorker'
+import type { UseSharedWorkerReturn } from '../adapters/sharedWorker'
 
-export type WorkerActivitySource = WorkerPool<unknown, unknown> | UseWorkerReturn<unknown, unknown>
+export type WorkerActivitySource =
+  | WorkerPool<unknown, unknown>
+  | UseWorkerReturn<unknown, unknown>
+  | UseSharedWorkerReturn<unknown, unknown>
 
 export interface WorkerActivityError {
   name: string
@@ -39,10 +43,10 @@ function isPoolSource(source: WorkerActivitySource): source is WorkerPool<unknow
 }
 
 /**
- * Builds a reactive activity snapshot for a `createWorkerPool()`/`useWorkerPool()` pool or a
- * single `useWorker()` instance, driven by the internal activity bus (no polling). Does not
- * depend on `@vue/devtools-api` — this is a standalone debug panel, not a browser-extension
- * integration, to keep the package dependency-free.
+ * Builds a reactive activity snapshot for a `createWorkerPool()`/`useWorkerPool()` pool, a
+ * single `useWorker()` instance, or a `useSharedWorker()` instance, driven by the internal
+ * activity bus (no polling). Does not depend on `@vue/devtools-api` — this is a standalone
+ * debug panel, not a browser-extension integration, to keep the package dependency-free.
  */
 export function createWorkerActivityMonitor(
   source: WorkerActivitySource,
