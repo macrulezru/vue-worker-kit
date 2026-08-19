@@ -44,9 +44,18 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: '22.13'
           cache: npm
-          cache-dependency-path: demo/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            demo/package-lock.json
+
+      # demo/tsconfig.json path-aliases 'vue-worker-kit/*' straight to ../src/*.ts (not dist/),
+      # so demo's own vue-tsc run type-checks files that live outside demo/ entirely — and
+      # Node module resolution for those files walks up from their OWN location (repo root's
+      # src/), never into demo/node_modules. Skipping this install reproduces exactly the
+      # "Cannot find module 'vue'" CI failure this comment is here to prevent.
+      - run: npm ci
 
       - run: npm ci
         working-directory: demo
