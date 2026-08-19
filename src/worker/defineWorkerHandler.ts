@@ -2,6 +2,9 @@ import {
   createProgressThrottle,
   serializeError,
   type MainToWorkerMessage,
+  type MessagePortLike,
+  type PortCountMessage,
+  type SharedWorkerScopeLike,
   type WorkerScopeLike,
 } from '../protocol'
 
@@ -34,12 +37,25 @@ export interface WorkerHandlerModule<In = unknown, Out = unknown> {
 
 export type WorkerHandlerFn<In, Out> = (input: In, ctx: WorkerContext) => Out | Promise<Out>
 
-function isWorkerScope(): boolean {
+function isDedicatedWorkerScope(): boolean {
   return (
-    typeof WorkerGlobalScope !== 'undefined' &&
+    typeof DedicatedWorkerGlobalScope !== 'undefined' &&
     typeof self !== 'undefined' &&
-    self instanceof WorkerGlobalScope
+    self instanceof DedicatedWorkerGlobalScope
   )
+}
+
+function isSharedWorkerScope(): boolean {
+  return (
+    typeof SharedWorkerGlobalScope !== 'undefined' &&
+    typeof self !== 'undefined' &&
+    self instanceof SharedWorkerGlobalScope
+  )
+}
+
+export interface WorkerProtocolHandle {
+  /** Aborts every currently in-flight `run` request's `ctx.signal` on this scope/port. */
+  abortAll(reason?: unknown): void
 }
 
 /**
@@ -50,7 +66,7 @@ function isWorkerScope(): boolean {
 export function attachWorkerProtocol<In, Out>(
   handler: WorkerHandlerFn<In, Out>,
   scope: WorkerScopeLike = self as unknown as WorkerScopeLike,
-): void {
+): WorkerProtocolHandle {
   const controllers = new Map<number, AbortController>()
 
   scope.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
@@ -60,6 +76,11 @@ export function attachWorkerProtocol<In, Out>(
       controllers.get(msg.id)?.abort(msg.reason)
       return
     }
+
+    // Anything other than 'run' (e.g. a shared-worker 'disconnect', or a future message type
+    // this build doesn't know about yet) must be ignored here, not misread as a run request —
+    // it would otherwise invoke the handler with `input: undefined` under a bogus `id`.
+    if (msg.type !== 'run') return
 
     const controller = new AbortController()
     controllers.set(msg.id, controller)
@@ -94,17 +115,81 @@ export function attachWorkerProtocol<In, Out>(
         scope.postMessage({ type: 'error', id: msg.id, error: serializeError(err) })
       })
   }
+
+  return {
+    abortAll(reason) {
+      for (const controller of controllers.values()) controller.abort(reason)
+    },
+  }
 }
 
 /**
- * Declares the worker-side handler for a `.worker.ts` file. Only actually starts the
- * `postMessage` message loop when evaluated inside a real `WorkerGlobalScope` — importing
- * the file anywhere else (e.g. accidentally from the main bundle) is inert.
+ * Wires the same `run`/`cancel` protocol onto a `SharedWorkerGlobalScope`. A shared worker
+ * never receives messages on `self.onmessage` — the platform only fires `self.onconnect` once
+ * per connecting tab, handing over a dedicated `MessagePort` for that tab. Each port gets its
+ * own `attachWorkerProtocol()` instance (its own `controllers` map, its own request-id space)
+ * so cancelling a task from one tab can never touch another tab's in-flight request.
+ *
+ * `portCount` is broadcast to every connected port on connect and on a cooperative `disconnect`
+ * message (see `DisconnectMessage` in protocol.ts) — there is no platform-level notification
+ * when a tab's port goes away without sending one (e.g. a crashed/force-closed tab), so a count
+ * that only ever grew would be a lie; the count is simply not decremented for those. A cooperative
+ * `disconnect` also aborts that port's own in-flight `run` requests (via `WorkerProtocolHandle`),
+ * so the handler stops as soon as it next checks `ctx.signal` instead of running to completion
+ * for a client that already rejected the promise and closed its port.
+ */
+export function attachSharedWorkerProtocol<In, Out>(
+  handler: WorkerHandlerFn<In, Out>,
+  scope: SharedWorkerScopeLike = self as unknown as SharedWorkerScopeLike,
+): void {
+  const ports = new Set<MessagePortLike>()
+
+  function broadcastPortCount(): void {
+    const message: PortCountMessage = { type: 'portCount', count: ports.size }
+    for (const port of ports) port.postMessage(message)
+  }
+
+  scope.onconnect = (event) => {
+    const port = event.ports[0]
+    ports.add(port)
+    broadcastPortCount()
+
+    const portScope: WorkerScopeLike = {
+      postMessage: (message, transfer) => port.postMessage(message, transfer),
+      onmessage: null,
+    }
+    const protocol = attachWorkerProtocol(handler, portScope)
+
+    port.onmessage = (messageEvent: MessageEvent<MainToWorkerMessage>) => {
+      if (messageEvent.data.type === 'disconnect') {
+        // Abort whatever this tab still had in flight *before* dropping the port — otherwise
+        // the handler keeps running for a client that will never see the result, and (for a
+        // handler that checks ctx.signal cooperatively) never stops on its own.
+        protocol.abortAll(new Error('SharedWorker port disconnected'))
+        ports.delete(port)
+        port.close()
+        broadcastPortCount()
+        return
+      }
+      portScope.onmessage?.(messageEvent)
+    }
+    port.start()
+  }
+}
+
+/**
+ * Declares the worker-side handler for a `.worker.ts` file. Only actually starts a message
+ * loop when evaluated inside a real dedicated- or shared-worker global scope — importing the
+ * file anywhere else (e.g. accidentally from the main bundle) is inert. The same handler works
+ * for both `new Worker(...)` (via `useWorker`/`createWorkerPool`) and `new SharedWorker(...)`
+ * (via `useSharedWorker`) without the file itself needing to know which one it's running under.
  */
 export function defineWorkerHandler<In, Out>(
   handler: WorkerHandlerFn<In, Out>,
 ): WorkerHandlerModule<In, Out> {
-  if (isWorkerScope()) {
+  if (isSharedWorkerScope()) {
+    attachSharedWorkerProtocol(handler)
+  } else if (isDedicatedWorkerScope()) {
     attachWorkerProtocol(handler)
   }
   return {} as WorkerHandlerModule<In, Out>

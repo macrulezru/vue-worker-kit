@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'vitest'
 import { createWorkerPool } from '../../src/adapters/pool'
 import { useWorker } from '../../src/useWorker'
+import { useSharedWorker } from '../../src/adapters/sharedWorker'
 import { createWorkerActivityMonitor } from '../../src/devtools/createWorkerActivityMonitor'
-import { createTestWorker, type FixtureModule } from '../helpers'
+import { createTestSharedWorker, createTestWorker, type FixtureModule } from '../helpers'
 
 describe('createWorkerActivityMonitor', () => {
   test('tracks pool busy/idle/queued plus average task time and recent errors', async () => {
@@ -39,6 +40,24 @@ describe('createWorkerActivityMonitor', () => {
 
     expect(monitor.snapshot.value.busy).toBe(0)
     const promise = worker.run(undefined)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(monitor.snapshot.value.busy).toBe(1)
+    expect(monitor.snapshot.value.idle).toBe(0)
+
+    release?.()
+    await promise
+    expect(monitor.snapshot.value.busy).toBe(0)
+  })
+
+  test('works against a useSharedWorker() instance (busy=1 while running)', async () => {
+    let release: (() => void) | undefined
+    const handler = () => new Promise<number>((resolve) => (release = () => resolve(1)))
+    const factory = createTestSharedWorker(handler)
+    const shared = useSharedWorker<FixtureModule<undefined, number>>(factory)
+    const monitor = createWorkerActivityMonitor(shared)
+
+    expect(monitor.snapshot.value.busy).toBe(0)
+    const promise = shared.run(undefined)
     await new Promise((resolve) => setTimeout(resolve, 5))
     expect(monitor.snapshot.value.busy).toBe(1)
     expect(monitor.snapshot.value.idle).toBe(0)

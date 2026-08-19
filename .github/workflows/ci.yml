@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: package (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 20.19 and 22.13 are the actual floors of each branch in package.json's "engines"
+        # (driven by eslint 10 / vite 8 / vue-tsc 3, verified by literally running `npm ci`
+        # against them — Node 18, EOL since April 2025, no longer works with this toolchain
+        # at all: eslint/vite/vue-tsc/vitest/happy-dom/tinybench all dropped it independently
+        # of any version this project pins directly).
+        node: ['20.19', '22.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run lint:check
+
+      - run: npm run test -- --run
+
+      - run: npm run build
+
+  demo:
+    name: demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.13'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            demo/package-lock.json
+
+      # demo/tsconfig.json path-aliases 'vue-worker-kit/*' straight to ../src/*.ts (not dist/),
+      # so demo's own vue-tsc run type-checks files that live outside demo/ entirely — and
+      # Node module resolution for those files walks up from their OWN location (repo root's
+      # src/), never into demo/node_modules. Skipping this install reproduces exactly the
+      # "Cannot find module 'vue'" CI failure this comment is here to prevent.
+      - run: npm ci
+
+      - run: npm ci
+        working-directory: demo
+
+      - run: npm run typecheck
+        working-directory: demo
+
+      - run: npm run build
+        working-directory: demo

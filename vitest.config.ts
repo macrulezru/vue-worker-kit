@@ -1,11 +1,15 @@
 import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
+import { fileURLToPath } from 'url'
+
+// See vite.config.ts for why this isn't `import.meta.dirname` or `__dirname`.
+const dirname = fileURLToPath(new URL('.', import.meta.url))
 
 export default defineConfig({
   plugins: [vue()],
   resolve: {
-    alias: { '@': resolve(__dirname, 'src') },
+    alias: { '@': resolve(dirname, 'src') },
   },
   test: {
     // Default to plain Node: protocol/useWorker/pool/computed tests only need

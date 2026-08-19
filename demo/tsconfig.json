@@ -14,6 +14,7 @@
       "vue-worker-kit/pool": ["../src/adapters/pool.ts"],
       "vue-worker-kit/computed": ["../src/adapters/computed.ts"],
       "vue-worker-kit/devtools": ["../src/devtools/index.ts"],
+      "vue-worker-kit/shared": ["../src/adapters/sharedWorker.ts"],
       "vue-worker-kit": ["../src/index.ts"]
     }
   },

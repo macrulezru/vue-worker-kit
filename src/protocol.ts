@@ -12,7 +12,12 @@ export interface CancelRequestMessage {
   readonly reason?: unknown
 }
 
-export type MainToWorkerMessage = RunRequestMessage | CancelRequestMessage
+/** Sent by `useSharedWorker()`'s `disconnect()` — tells the shared worker this tab's port is going away, so it can update `portCount` for the remaining tabs. A `SharedWorker` has no platform-level way to detect a closed port on its own. */
+export interface DisconnectMessage {
+  readonly type: 'disconnect'
+}
+
+export type MainToWorkerMessage = RunRequestMessage | CancelRequestMessage | DisconnectMessage
 
 export interface SerializedError {
   readonly name: string
@@ -44,7 +49,17 @@ export interface ChunkResponseMessage {
   readonly chunk: unknown
 }
 
+/** Broadcast to every connected port whenever a tab connects or (cooperatively) disconnects. */
+export interface PortCountMessage {
+  readonly type: 'portCount'
+  readonly count: number
+}
+
+/** The id-correlated subset of worker→main messages — every request/response pair `createWorkerClient()` tracks in `pending`. */
 export type WorkerToMainMessage = ResultResponseMessage | ErrorResponseMessage | ProgressResponseMessage | ChunkResponseMessage
+
+/** Full wire protocol for a `SharedWorker`'s port — adds the un-correlated `portCount` broadcast, which isn't a response to any particular request and has no `id`. */
+export type SharedWorkerToMainMessage = WorkerToMainMessage | PortCountMessage
 
 /** Minimal structural subset of DOM `Worker` — lets tests swap in a fake without a real OS thread. */
 export interface WorkerLike {
@@ -58,6 +73,19 @@ export interface WorkerLike {
 export interface WorkerScopeLike {
   postMessage(message: unknown, transfer?: Transferable[]): void
   onmessage: ((event: MessageEvent) => void) | null
+}
+
+/** Minimal structural subset of DOM `MessagePort` — the worker-side counterpart of a `SharedWorker`'s `.port`. */
+export interface MessagePortLike {
+  postMessage(message: unknown, transfer?: Transferable[]): void
+  close(): void
+  start(): void
+  onmessage: ((event: MessageEvent) => void) | null
+}
+
+/** Minimal structural subset of `SharedWorkerGlobalScope`. */
+export interface SharedWorkerScopeLike {
+  onconnect: ((event: { ports: readonly MessagePortLike[] }) => void) | null
 }
 
 export function serializeError(err: unknown): SerializedError {
