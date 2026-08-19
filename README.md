@@ -319,6 +319,7 @@ import { useWorker } from 'vue-worker-kit'
 
 const { run, chunks, isRunning } = useWorker<typeof import('./process.worker')>(
   () => new Worker(new URL('./process.worker.ts', import.meta.url), { type: 'module' }),
+  { streaming: true }, // required — without it `chunks` is `undefined`, not a ref
 )
 
 // Process large dataset with streaming results

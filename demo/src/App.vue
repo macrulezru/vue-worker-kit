@@ -224,6 +224,12 @@ async function triggerError() {
 // worker instance, not a plain per-tab worker each: open a second tab (button below) and run
 // the task there too — the id matches, portCount reads 2 in both tabs, and disconnecting one
 // tab never resets or kills the worker for the other.
+// SharedWorker doesn't exist at all in Safari iOS or Chrome Android — `connect()`/`run()`
+// throw WorkerUnavailableError there. Checked *before* wiring anything below: an uncaught
+// throw here would happen at <script setup> top level and take down the whole demo page,
+// not just this one section.
+const sharedWorkerSupported = typeof SharedWorker !== 'undefined'
+
 const sharedWorker = useSharedWorker<typeof import('./workers/shared-echo.worker')>(() =>
   new SharedWorker(new URL('./workers/shared-echo.worker.ts', import.meta.url), {
     type: 'module',
@@ -238,8 +244,10 @@ const sharedResult = ref<{ doubled: number; workerInstanceId: string } | null>(n
 // called run() yet" once you're lazily auto-connecting; `portCount` is the real shared state.
 const sharedConnectedHere = ref(false)
 
-sharedWorker.connect()
-sharedConnectedHere.value = true
+if (sharedWorkerSupported) {
+  sharedWorker.connect()
+  sharedConnectedHere.value = true
+}
 
 async function runSharedTask() {
   sharedResult.value = await sharedWorker.run({ value: sharedInputValue.value })
@@ -412,28 +420,38 @@ workerStack: {{ throwingWorker.error.value.workerStack }}</pre>
         once when the worker itself starts, not once per tab, so an identical id is the concrete
         proof they're talking to the same worker instance, not one each.
       </p>
-      <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px">
-        <button @click="openAnotherTab">Open another tab</button>
-        <label>
-          value:
-          <input v-model.number="sharedInputValue" type="number" style="width: 70px" />
-        </label>
-        <button @click="runSharedTask">Run via shared worker</button>
-        <button @click="toggleSharedConnection">
-          {{ sharedConnectedHere ? 'Disconnect this tab' : 'Reconnect this tab' }}
-        </button>
-      </div>
-      <p>
-        <strong>{{ sharedWorker.portCount.value }}</strong> tab(s) currently connected to this
-        shared worker (updates live as other tabs connect/disconnect).
+      <p v-if="!sharedWorkerSupported" style="color: #e5484d">
+        <code>SharedWorker</code> isn't available in this browser (e.g. Safari iOS, Chrome
+        Android don't implement it) — <code>useSharedWorker()</code> throws
+        <code>WorkerUnavailableError</code> in that case, the same way <code>useWorker()</code>
+        does under SSR.
       </p>
-      <p v-if="sharedResult">
-        doubled={{ sharedResult.doubled }}, workerInstanceId=<code>{{ sharedResult.workerInstanceId }}</code>
-      </p>
-      <p v-if="sharedWorker.error.value" style="color: #e5484d">
-        Error: {{ sharedWorker.error.value.message }}
-      </p>
-      <WorkerActivityPanel :monitor="sharedMonitor" />
+      <template v-else>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px">
+          <button @click="openAnotherTab">Open another tab</button>
+          <label>
+            value:
+            <input v-model.number="sharedInputValue" type="number" style="width: 70px" />
+          </label>
+          <button @click="runSharedTask">Run via shared worker</button>
+          <button @click="toggleSharedConnection">
+            {{ sharedConnectedHere ? 'Disconnect this tab' : 'Reconnect this tab' }}
+          </button>
+        </div>
+        <p>
+          <strong>{{ sharedWorker.portCount.value }}</strong> tab(s) last reported connected to
+          this shared worker — best-effort: it's the worker's last broadcast, updates live as
+          other tabs connect or cooperatively disconnect, but a crashed/force-closed tab is
+          never subtracted (there's no platform-level notification for that).
+        </p>
+        <p v-if="sharedResult">
+          doubled={{ sharedResult.doubled }}, workerInstanceId=<code>{{ sharedResult.workerInstanceId }}</code>
+        </p>
+        <p v-if="sharedWorker.error.value" style="color: #e5484d">
+          Error: {{ sharedWorker.error.value.message }}
+        </p>
+        <WorkerActivityPanel :monitor="sharedMonitor" />
+      </template>
     </section>
   </main>
 </template>

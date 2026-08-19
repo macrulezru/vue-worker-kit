@@ -53,6 +53,11 @@ function isSharedWorkerScope(): boolean {
   )
 }
 
+export interface WorkerProtocolHandle {
+  /** Aborts every currently in-flight `run` request's `ctx.signal` on this scope/port. */
+  abortAll(reason?: unknown): void
+}
+
 /**
  * Wires the `run`/`cancel` protocol onto a worker-global-like scope. Split out from
  * `defineWorkerHandler` so tests can drive it against a fake scope directly, instead of
@@ -61,7 +66,7 @@ function isSharedWorkerScope(): boolean {
 export function attachWorkerProtocol<In, Out>(
   handler: WorkerHandlerFn<In, Out>,
   scope: WorkerScopeLike = self as unknown as WorkerScopeLike,
-): void {
+): WorkerProtocolHandle {
   const controllers = new Map<number, AbortController>()
 
   scope.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
@@ -110,6 +115,12 @@ export function attachWorkerProtocol<In, Out>(
         scope.postMessage({ type: 'error', id: msg.id, error: serializeError(err) })
       })
   }
+
+  return {
+    abortAll(reason) {
+      for (const controller of controllers.values()) controller.abort(reason)
+    },
+  }
 }
 
 /**
@@ -122,7 +133,10 @@ export function attachWorkerProtocol<In, Out>(
  * `portCount` is broadcast to every connected port on connect and on a cooperative `disconnect`
  * message (see `DisconnectMessage` in protocol.ts) — there is no platform-level notification
  * when a tab's port goes away without sending one (e.g. a crashed/force-closed tab), so a count
- * that only ever grew would be a lie; the count is simply not decremented for those.
+ * that only ever grew would be a lie; the count is simply not decremented for those. A cooperative
+ * `disconnect` also aborts that port's own in-flight `run` requests (via `WorkerProtocolHandle`),
+ * so the handler stops as soon as it next checks `ctx.signal` instead of running to completion
+ * for a client that already rejected the promise and closed its port.
  */
 export function attachSharedWorkerProtocol<In, Out>(
   handler: WorkerHandlerFn<In, Out>,
@@ -144,10 +158,14 @@ export function attachSharedWorkerProtocol<In, Out>(
       postMessage: (message, transfer) => port.postMessage(message, transfer),
       onmessage: null,
     }
-    attachWorkerProtocol(handler, portScope)
+    const protocol = attachWorkerProtocol(handler, portScope)
 
     port.onmessage = (messageEvent: MessageEvent<MainToWorkerMessage>) => {
       if (messageEvent.data.type === 'disconnect') {
+        // Abort whatever this tab still had in flight *before* dropping the port — otherwise
+        // the handler keeps running for a client that will never see the result, and (for a
+        // handler that checks ctx.signal cooperatively) never stops on its own.
+        protocol.abortAll(new Error('SharedWorker port disconnected'))
         ports.delete(port)
         port.close()
         broadcastPortCount()

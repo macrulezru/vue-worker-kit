@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `createWorkerActivityMonitor()`/`<WorkerActivityPanel>` now also accept a `useSharedWorker()` instance, not just a pool or a single `useWorker()`.
 - CI (GitHub Actions): typecheck, test, lint, and build run on every push/PR, for both the package and `demo/`, on Node 20.19 and Node 22.13.
 - Demo (`demo/`) gained a `useSharedWorker()` section — open a second tab from inside the demo and watch `portCount` and a `workerInstanceId` (generated once by the worker itself, not per tab) sync live, concrete proof both tabs share one worker instance. README now links to the demo with setup instructions, and shows a CI status badge — neither existed before.
+- `attachWorkerProtocol()` (`/worker`) now returns a `WorkerProtocolHandle` (`{ abortAll(reason?) }`) instead of `void`, so a caller wiring its own scope/port can abort every in-flight `run` request on it — used by `attachSharedWorkerProtocol()`'s own `disconnect` handling (see Fixed).
 
 ### Changed
 
@@ -28,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Found while adding a message type to the worker protocol**: `attachWorkerProtocol`'s message handler treated anything that wasn't `'cancel'` as a `'run'` request, `id`/`input` included — a forward-compatibility hazard for any future message type (and would have made a naive `useSharedWorker` teardown message silently run the handler with `undefined` input). Now explicitly ignores anything that isn't `'run'` or `'cancel'`.
 - **Found while wiring the package's own barrel file**: `createCacheKey` (a plain function) was re-exported via `export type { createCacheKey }` — TypeScript type-checked that without complaint and even emitted it into `dist/index.d.ts`, but a type-only export is erased at build time, so `dist/index.mjs`/`.cjs` silently shipped without it: a runtime `TypeError` for anyone who imported and called it, despite a clean `tsc --noEmit`. Regression-tested by importing the whole `src/index.ts` barrel and asserting every documented runtime export is actually callable, not just type-checkable.
+- **Found in code review**: a cooperative `disconnect()` on `useSharedWorker()` closed that tab's port without aborting whatever `run()` it still had in flight on the worker side — the handler kept computing for a client that had already rejected the promise and would never see the result. `attachSharedWorkerProtocol()` now calls the new `WorkerProtocolHandle.abortAll()` before closing the port, so a handler checking `ctx.signal` cooperatively stops as soon as it next looks.
 
 ## [0.1.3] - 2026-07-20
 

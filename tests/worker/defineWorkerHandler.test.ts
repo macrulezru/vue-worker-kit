@@ -184,4 +184,33 @@ describe('attachSharedWorkerProtocol', () => {
     expect(receivedA.some((m) => (m as { type: string }).type === 'result')).toBe(false)
     expect(receivedB).toContainEqual({ type: 'result', id: 1, output: 2 })
   })
+
+  test('a cooperative disconnect aborts that port\'s own in-flight run request', async () => {
+    let observedAborted = false
+    let notifyHandlerSawAbort: (() => void) | undefined
+    const handlerSawAbort = new Promise<void>((resolve) => {
+      notifyHandlerSawAbort = resolve
+    })
+
+    const scope: SharedWorkerScopeLike = { onconnect: null }
+    attachSharedWorkerProtocol((_input: number, ctx) => {
+      return new Promise<number>((resolve, reject) => {
+        ctx.signal.addEventListener('abort', () => {
+          observedAborted = true
+          notifyHandlerSawAbort?.()
+          reject(ctx.signal.reason)
+        })
+      })
+    }, scope)
+
+    const tab = createPortPair()
+    scope.onconnect!({ ports: [tab.workerPort] })
+
+    tab.clientPort.postMessage({ type: 'run', id: 1, input: 1 })
+    await new Promise((resolve) => setTimeout(resolve, 5)) // let the handler register its abort listener
+    tab.clientPort.postMessage({ type: 'disconnect' })
+
+    await handlerSawAbort
+    expect(observedAborted).toBe(true)
+  })
 })
