@@ -1,10 +1,10 @@
 {
   "name": "vue-worker-kit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Type-safe Web Worker composables for Vue 3 — useWorker(), worker pool, reactive useWorkerComputed(), zero dependencies, SSR-safe.",
   "author": "macrulez <macrulezru@gmail.com> (https://macrulez.ru/en)",
   "license": "MIT",
-  "homepage": "https://github.com/macrulezru/vue-worker-kit#readme",
+  "homepage": "https://npm.vuecraft.ru/en/packages/vue-worker-kit/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/macrulezru/vue-worker-kit.git"
