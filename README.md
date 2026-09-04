@@ -6,6 +6,27 @@ Type-safe Web Worker composables for Vue 3 — `useWorker()`, a worker pool, and
 
 ---
 
+## Features
+
+- **`useWorker()`** — type-safe composable wrapping a single Web Worker; input/output types inferred from `typeof import('./x.worker')`, no manual generics on either side
+- **`createWorkerPool()` / `useWorkerPool()`** — a lazily-grown pool (default size: `navigator.hardwareConcurrency`) for many small, independent tasks; `pool.run()`/`pool.map()` with bounded concurrency
+- **`useWorkerComputed()`** — a `computed()` that recalculates inside a worker on every reactive source change; superseded/stale runs are discarded automatically via a generation number
+- **`useSharedWorker()`** — reuses one `SharedWorker` across every tab/window of the same origin, instead of one worker per tab
+- **`defineWorkerHandler()`** — worker-side helper that wires the run/cancel message protocol automatically; you only write the handler function
+- **Transferables** — zero-copy transfer into the worker (`RunOptions.transfer`) and back out (`ctx.transfer()`), for large buffers like images or `OffscreenCanvas` frames
+- **Streaming / chunked results** — `ctx.reportChunk()` sends intermediate results while a long task is still running, collected reactively in `chunks`
+- **Cancellation** — `AbortSignal` support, cooperative via `ctx.signal`; `run()` rejects immediately regardless of what the worker is doing
+- **Retry with backoff** — `retries`/`retryDelay` options retry non-abort failures automatically, with a constant or attempt-based delay
+- **Memoization / result cache** — opt-in LRU cache keyed by `JSON.stringify(input)`, skips the worker round-trip entirely for a repeated input
+- **Warmup** — pre-create a worker (or a whole pool) ahead of time to eliminate the ~50-200ms cold-start latency on the first real task
+- **Worker lifecycle management** — idle-timeout termination, scope-based auto-termination on `onScopeDispose` (no SPA-navigation leaks), lazily-created pool workers
+- **Devtools panel** — `vue-worker-kit/devtools`'s `<WorkerActivityPanel>` shows busy/idle counts, queue length, average task time, and recent errors — no `@vue/devtools-api` dependency
+- **Structured error handling** — a thrown worker error becomes a `WorkerError` with the original in-worker stack preserved as `.workerStack`; a `DataCloneError` for values that can't structured-clone; a `WorkerUnavailableError` instead of a raw `ReferenceError` under SSR
+- **End-to-end type inference** — the worker function's input/output type is inferred from the worker file itself via `typeof import(...)`, not duplicated by hand on both sides
+- **Zero runtime dependencies beyond Vue**
+
+---
+
 ## The problem
 
 Existing Vue wrappers around Web Workers (`vue-worker`, `vue-web-workers`, and similar) are Vue 2-era plugins: no types, no Composition API, no pool, no transferables, disposable workers built by serializing a function to a string. [Comlink](https://github.com/GoogleChromeLabs/comlink) gives you a solid RPC protocol, but typing it is manual (`Comlink.wrap<MyAPI>()`), with no Vue reactivity and no component-lifecycle integration.
@@ -23,9 +44,9 @@ This package's one distinguishing idea: **end-to-end typing without duplicating 
 Vue is a required peer dependency — this package has no framework-agnostic core, every entry point is a Vue composable or a Vue-consumable worker-side helper.
 
 | Environment | Minimum version                        |
-| ------------- | ----------------------------------------- |
-| Node.js     | `^20.19.0 \|\| ^22.13.0 \|\| >=24.0.0`     |
-| Vue         | `^3.4.0` (required)                        |
+| ----------- | -------------------------------------- |
+| Node.js     | `^20.19.0 \|\| ^22.13.0 \|\| >=24.0.0` |
+| Vue         | `^3.4.0` (required)                    |
 
 ```bash
 npm install vue-worker-kit
