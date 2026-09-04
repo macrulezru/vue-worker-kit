@@ -81,6 +81,30 @@ const sorted = await run(hugeArray, { transfer: [hugeArray.buffer] })
 // sorted: number[] — inferred from heavy-sort.worker.ts, no generic annotation needed
 ```
 
+### More examples
+
+#### Intermediate results, not just the final one
+
+With `streaming: true` the worker reports chunks as it goes via `ctx.reportChunk()` — `chunks` updates reactively while the final result is still pending.
+
+```ts
+import { useWorker } from 'vue-worker-kit'
+
+const { run, chunks, isRunning } = useWorker<typeof import('./process.worker')>(
+  () => new Worker(new URL('./process.worker.ts', import.meta.url), { type: 'module' }),
+  { streaming: true }, // required — without it `chunks` is undefined, not a ref
+)
+
+const finalResult = await run(largeDataset)
+
+watch(chunks, (newChunks) => {
+  console.log('Received chunk:', newChunks.at(-1))
+})
+
+// Worker-side calls ctx.reportChunk(data) as it processes each batch —
+// chunks.value fills in progressively while run() is still pending.
+```
+
 ---
 
 ## Documentation & links
