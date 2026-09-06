@@ -27,6 +27,17 @@ Type-safe Web Worker composables for Vue 3 — `useWorker()`, a worker pool, and
 
 ---
 
+## When you'd reach for this
+
+A UI that stutters from heavy synchronous computations is a clear sign it's time to move that work off the main thread — vue-worker-kit gives you Vue composables for exactly that, built on the real Web Worker API.
+
+- **A 100k-row table freezes on every sort** — Client-side sorting, filtering, or parsing of a large dataset runs in a real system thread — the UI stays responsive even during a heavy recalculation.
+- **Live search recalculates on every keystroke** — The stale run cancels itself, and a new one starts in the background thread a moment later — you can type faster than the worker computes, and the UI never stutters.
+- **Bulk file or image processing in the browser** — A worker pool spreads resizing, format conversion, or thumbnail generation for hundreds of files across multiple CPU cores, and large binary data moves zero-copy via transferables.
+- **The same dashboard is open in several tabs** — A SharedWorker computes the heavy state once for every tab instead of each tab recalculating it separately — switching tabs feels instant.
+
+---
+
 ## The problem
 
 Existing Vue wrappers around Web Workers (`vue-worker`, `vue-web-workers`, and similar) are Vue 2-era plugins: no types, no Composition API, no pool, no transferables, disposable workers built by serializing a function to a string. [Comlink](https://github.com/GoogleChromeLabs/comlink) gives you a solid RPC protocol, but typing it is manual (`Comlink.wrap<MyAPI>()`), with no Vue reactivity and no component-lifecycle integration.
