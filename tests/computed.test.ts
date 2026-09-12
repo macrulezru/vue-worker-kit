@@ -1,5 +1,5 @@
 import { nextTick, ref } from 'vue'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import { useWorkerComputed } from '../src/adapters/computed'
 import { createTestWorker, waitFor, type FixtureModule } from './helpers'
 
@@ -64,5 +64,22 @@ describe('useWorkerComputed', () => {
     )
     expect(result.value).toBeUndefined()
     await waitFor(() => result.value === 1)
+  })
+
+  test('the returned result is actually readonly() at runtime, not just typed that way', async () => {
+    const handler = async (input: number) => input
+    const source = ref(1)
+    const result = useWorkerComputed<FixtureModule<number, number>>(
+      () => createTestWorker(handler),
+      () => source.value,
+    )
+    await waitFor(() => result.value === 1)
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // @ts-expect-error — intentionally assigning to a readonly field to prove it's enforced
+    result.value = 999
+    expect(result.value).toBe(1) // unchanged — the write was rejected, not silently accepted
+    expect(warnSpy).toHaveBeenCalled() // Vue's own dev-mode readonly-write warning
+    warnSpy.mockRestore()
   })
 })

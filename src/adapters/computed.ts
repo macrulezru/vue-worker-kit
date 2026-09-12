@@ -1,4 +1,4 @@
-import { getCurrentScope, onScopeDispose, reactive, shallowRef, watch } from 'vue'
+import { getCurrentScope, onScopeDispose, reactive, readonly, shallowRef, watch } from 'vue'
 import type { WorkerError } from '../errors'
 import { useWorker } from '../useWorker'
 import type { WorkerModuleInput, WorkerModuleOutput } from '../types'
@@ -70,5 +70,10 @@ export function useWorkerComputed<TModule>(
     })
   }
 
-  return reactive({ value, isRunning, error }) as WorkerComputedResult<WorkerModuleOutput<TModule>>
+  // readonly() — not just the type annotation — so `result.value = x` actually throws a dev-mode
+  // warning and is a no-op, instead of silently succeeding against the plain reactive() wrapper
+  // the type signature already claimed (but didn't enforce) was readonly.
+  return readonly(reactive({ value, isRunning, error })) as WorkerComputedResult<
+    WorkerModuleOutput<TModule>
+  >
 }

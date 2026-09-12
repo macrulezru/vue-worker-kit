@@ -50,6 +50,43 @@ describe('createWorkerPool', () => {
     expect(results).toEqual([10, 21, 32])
   })
 
+  test('run() forwards onProgress/onChunk from RunOptions to the handler-reported events', async () => {
+    const handler = async (
+      input: number,
+      ctx: import('../src/worker/defineWorkerHandler').WorkerContext,
+    ) => {
+      ctx.reportChunk('first')
+      ctx.reportChunk('second')
+      return input * 2
+    }
+    const pool = createWorkerPool<FixtureModule<number, number>>(() => createTestWorker(handler))
+
+    const chunks: unknown[] = []
+    const result = await pool.run(5, { onChunk: (c) => chunks.push(c) })
+
+    expect(result).toBe(10)
+    expect(chunks).toEqual(['first', 'second'])
+  })
+
+  test('map() forwards onProgress/onChunk from WorkerMapOptions, shared across every item', async () => {
+    const handler = async (
+      input: number,
+      ctx: import('../src/worker/defineWorkerHandler').WorkerContext,
+    ) => {
+      ctx.reportChunk(`chunk-${input}`)
+      return input * 2
+    }
+    const pool = createWorkerPool<FixtureModule<number, number>>(() => createTestWorker(handler), {
+      size: 2,
+    })
+
+    const chunks: unknown[] = []
+    const results = await pool.map([1, 2, 3], { onChunk: (c) => chunks.push(c) })
+
+    expect(results).toEqual([2, 4, 6])
+    expect(chunks.sort()).toEqual(['chunk-1', 'chunk-2', 'chunk-3'])
+  })
+
   test('warmup() pre-creates all workers up to size', async () => {
     let createCount = 0
     const handler = async () => 1
@@ -67,7 +104,10 @@ describe('createWorkerPool', () => {
   })
 
   test('size defaults to navigator.hardwareConcurrency when not specified', () => {
-    const pool = createWorkerPool<FixtureModule<undefined, number>>(() => createTestWorker(() => 1), {})
+    const pool = createWorkerPool<FixtureModule<undefined, number>>(
+      () => createTestWorker(() => 1),
+      {},
+    )
     expect(pool.size).toBe(navigator.hardwareConcurrency)
     expect(pool.size).toBeGreaterThan(0)
   })
@@ -77,7 +117,10 @@ describe('createWorkerPool', () => {
     // @ts-expect-error simulating an SSR environment where `navigator` does not exist
     delete globalThis.navigator
     try {
-      const pool = createWorkerPool<FixtureModule<undefined, number>>(() => createTestWorker(() => 1), {})
+      const pool = createWorkerPool<FixtureModule<undefined, number>>(
+        () => createTestWorker(() => 1),
+        {},
+      )
       expect(pool.size).toBe(4)
     } finally {
       globalThis.navigator = originalNavigator
@@ -110,9 +153,12 @@ describe('createWorkerPool', () => {
         release = () => resolve(1)
       })
 
-    const pool = createWorkerPool<FixtureModule<undefined, number>>(() => createTestWorker(handler), {
-      size: 1,
-    })
+    const pool = createWorkerPool<FixtureModule<undefined, number>>(
+      () => createTestWorker(handler),
+      {
+        size: 1,
+      },
+    )
 
     const p1 = pool.run(undefined)
     const p2 = pool.run(undefined)
@@ -133,9 +179,12 @@ describe('createWorkerPool', () => {
 
   test('terminate() rejects queued and in-flight tasks and resets stats', async () => {
     const handler = () => new Promise<number>(() => {}) // never resolves
-    const pool = createWorkerPool<FixtureModule<undefined, number>>(() => createTestWorker(handler), {
-      size: 1,
-    })
+    const pool = createWorkerPool<FixtureModule<undefined, number>>(
+      () => createTestWorker(handler),
+      {
+        size: 1,
+      },
+    )
 
     const p1 = pool.run(undefined)
     const p2 = pool.run(undefined) // queued, size is 1

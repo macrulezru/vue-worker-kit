@@ -4,7 +4,7 @@ import { WorkerUnavailableError, toAbortError } from '../errors'
 import { attachActivityBus, createActivityBus } from '../internal/activityBus'
 import { createWorkerClient, type WorkerClient } from '../internal/workerClient'
 import type { WorkerLike } from '../protocol'
-import type { RunOptions, WorkerModuleInput, WorkerModuleOutput } from '../types'
+import type { RunOptions, WorkerMapOptions, WorkerModuleInput, WorkerModuleOutput } from '../types'
 
 export interface WorkerPoolOptions {
   /**
@@ -30,15 +30,6 @@ export interface WorkerPoolStats {
   queued: number
 }
 
-export interface WorkerMapOptions<T = unknown> {
-  /** Number of concurrent tasks. Defaults to pool size. */
-  concurrency?: number
-  /** Global abort signal for all items. */
-  signal?: AbortSignal
-  /** Per-item transfer list function for zero-copy transfers. */
-  transfer?: (item: T) => Transferable[]
-}
-
 export interface WorkerPool<In, Out> {
   run(input: In, options?: RunOptions): Promise<Out>
   map(items: In[], options?: WorkerMapOptions<In>): Promise<Out[]>
@@ -53,6 +44,8 @@ interface QueuedTask {
   input: unknown
   transfer?: Transferable[]
   signal?: AbortSignal
+  onProgress?: (value: number) => void
+  onChunk?: (chunk: unknown) => void
   resolve(output: unknown): void
   reject(error: unknown): void
 }
@@ -133,7 +126,12 @@ export function createWorkerPool<TModule>(
 
     const startedAt = Date.now()
     activityBus.emit.taskStart()
-    const { id, promise } = slot.client.send(task.input, task.transfer, undefined)
+    const { id, promise } = slot.client.send(
+      task.input,
+      task.transfer,
+      task.onProgress,
+      task.onChunk,
+    )
     const onAbort = (): void => {
       slot.client.cancel(id, signal.reason)
       task.reject(toAbortError(signal.reason))
@@ -161,7 +159,15 @@ export function createWorkerPool<TModule>(
 
   function run(input: unknown, runOptions: RunOptions = {}): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      queue.push({ input, transfer: runOptions.transfer, signal: runOptions.signal, resolve, reject })
+      queue.push({
+        input,
+        transfer: runOptions.transfer,
+        signal: runOptions.signal,
+        onProgress: runOptions.onProgress,
+        onChunk: runOptions.onChunk,
+        resolve,
+        reject,
+      })
       queuedCount.value++
       pump()
     })
@@ -179,13 +185,16 @@ export function createWorkerPool<TModule>(
         if (index >= items.length) return
         const item = items[index]
         const transfer = mapOptions.transfer ? mapOptions.transfer(item) : undefined
-        results[index] = await run(item, { transfer, signal: globalSignal })
+        results[index] = await run(item, {
+          transfer,
+          signal: globalSignal,
+          onProgress: mapOptions.onProgress,
+          onChunk: mapOptions.onChunk,
+        })
       }
     }
 
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
-    )
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()))
     return results
   }
 

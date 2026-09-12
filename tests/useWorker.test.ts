@@ -1,8 +1,8 @@
 import { effectScope } from 'vue'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import { useWorker } from '../src/useWorker'
 import { WorkerError, WorkerUnavailableError } from '../src/errors'
-import { createTestWorker, waitFor } from './helpers'
+import { createCrashingTestWorker, createTestWorker, waitFor } from './helpers'
 import { sortHandler } from './fixtures/sort.worker'
 import { asyncEchoHandler } from './fixtures/asyncEcho.worker'
 import { throwingHandler } from './fixtures/throwing.worker'
@@ -14,7 +14,9 @@ import type { WorkerContext } from '../src/worker/defineWorkerHandler'
 describe('useWorker — run()', () => {
   // §9 case 1
   test('resolves with a correctly typed result for a sync handler', async () => {
-    const { run } = useWorker<typeof import('./fixtures/sort.worker')>(() => createTestWorker(sortHandler))
+    const { run } = useWorker<typeof import('./fixtures/sort.worker')>(() =>
+      createTestWorker(sortHandler),
+    )
     const result = await run([3, 1, 2])
     expect(result).toEqual([1, 2, 3])
   })
@@ -50,9 +52,12 @@ describe('useWorker — run()', () => {
       await new Promise((resolve) => setTimeout(resolve, input.delayMs))
       return input.id
     }
-    const { run } = useWorker<typeof import('./fixtures/delay.worker')>(() => createTestWorker(handler), {
-      retries: 3,
-    })
+    const { run } = useWorker<typeof import('./fixtures/delay.worker')>(
+      () => createTestWorker(handler),
+      {
+        retries: 3,
+      },
+    )
     const controller = new AbortController()
     const promise = run({ id: 1, delayMs: 200 }, { signal: controller.signal })
     controller.abort()
@@ -106,6 +111,36 @@ describe('useWorker — run()', () => {
     expect(createCount).toBe(2)
   })
 
+  test('a worker crash (onerror) nulls the worker/client — the next run() transparently creates a fresh one', async () => {
+    let createCount = 0
+    const factory = () => {
+      createCount++
+      return createCount === 1 ? createCrashingTestWorker('boom') : createTestWorker(sortHandler)
+    }
+    const { run } = useWorker<typeof import('./fixtures/sort.worker')>(factory)
+
+    await expect(run([2, 1])).rejects.toMatchObject({ name: 'WorkerError' })
+    expect(createCount).toBe(1)
+
+    // Without the fix, the crashed worker/client would still be cached here — this run()
+    // would reuse the same dead worker (whose postMessage always crashes) instead of the
+    // factory producing a fresh, healthy one.
+    const result = await run([2, 1])
+    expect(result).toEqual([1, 2])
+    expect(createCount).toBe(2)
+  })
+
+  test('an explicit terminate() call is exposed on the returned object, even without an active effect scope', async () => {
+    let terminateCount = 0
+    const { run, terminate } = useWorker<typeof import('./fixtures/sort.worker')>(() =>
+      createTestWorker(sortHandler, { onTerminate: () => terminateCount++ }),
+    )
+    await run([1])
+    expect(terminateCount).toBe(0)
+    terminate()
+    expect(terminateCount).toBe(1)
+  })
+
   // §9 case 7
   test('onScopeDispose terminates the worker when the component scope is disposed', async () => {
     let terminateCount = 0
@@ -145,7 +180,9 @@ describe('useWorker — run()', () => {
       capturedBuffer = result
       return result
     }
-    const { run } = useWorker<typeof import('./fixtures/transferOut.worker')>(() => createTestWorker(handler))
+    const { run } = useWorker<typeof import('./fixtures/transferOut.worker')>(() =>
+      createTestWorker(handler),
+    )
 
     const result = await run({ size: 16, fillValue: 42 })
     expect(new Uint8Array(result)[0]).toBe(42)
@@ -161,7 +198,9 @@ describe('useWorker — run()', () => {
     // @ts-expect-error simulating an SSR environment where `Worker` does not exist
     delete globalThis.Worker
     try {
-      const { run } = useWorker<typeof import('./fixtures/sort.worker')>(() => createTestWorker(sortHandler))
+      const { run } = useWorker<typeof import('./fixtures/sort.worker')>(() =>
+        createTestWorker(sortHandler),
+      )
       await expect(run([1])).rejects.toBeInstanceOf(WorkerUnavailableError)
     } finally {
       globalThis.Worker = originalWorker
@@ -231,4 +270,26 @@ test('warmup() pre-creates the worker without running a task', async () => {
   const result = await run([3, 1, 2])
   expect(result).toEqual([1, 2, 3])
   expect(createCount).toBe(1)
+})
+
+test('a handler calling ctx.reportChunk() with streaming disabled (default) warns and drops the chunk, without failing the run', async () => {
+  type ChunkModule = {
+    default: import('../src/worker/defineWorkerHandler').WorkerHandlerModule<number, number>
+  }
+  const handler = async (
+    input: number,
+    ctx: import('../src/worker/defineWorkerHandler').WorkerContext,
+  ) => {
+    ctx.reportChunk('unexpected-chunk')
+    return input * 2
+  }
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+  const { run } = useWorker<ChunkModule>(() => createTestWorker(handler))
+  const result = await run(5)
+
+  expect(result).toBe(10)
+  expect(warnSpy).toHaveBeenCalledOnce()
+  expect(warnSpy.mock.calls[0][0]).toMatch(/reportChunk/)
+  warnSpy.mockRestore()
 })

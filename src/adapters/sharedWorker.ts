@@ -4,17 +4,18 @@ import { WorkerError, WorkerUnavailableError, isAbortError, toAbortError } from 
 import { attachActivityBus, createActivityBus } from '../internal/activityBus'
 import { createWorkerClient, type WorkerClient } from '../internal/workerClient'
 import type { DisconnectMessage, SharedWorkerToMainMessage, WorkerLike } from '../protocol'
-import type { RunOptions, WorkerModuleInput, WorkerModuleOutput, UseWorkerCacheOptions } from '../types'
+import type {
+  RunOptions,
+  WorkerModuleInput,
+  WorkerModuleOutput,
+  UseWorkerCacheOptions,
+  RetryStrategyOptions,
+  StreamingOptions,
+} from '../types'
 
-export interface UseSharedWorkerOptions {
-  /** Automatic retries on rejection, not applied to cancellations. Default `0`. */
-  retries?: number
-  /** Delay function for exponential backoff. */
-  retryDelay?: (attempt: number) => number
+export interface UseSharedWorkerOptions extends RetryStrategyOptions, StreamingOptions {
   /** Cache options for memoization. */
   cache?: UseWorkerCacheOptions
-  /** Enable streaming mode with chunked results. */
-  streaming?: boolean
 }
 
 export interface UseSharedWorkerReturn<In, Out> {
@@ -242,7 +243,10 @@ export function useSharedWorker<TModule>(
   }
 
   const result: UseSharedWorkerReturn<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>> = {
-    run: run as UseSharedWorkerReturn<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>['run'],
+    run: run as UseSharedWorkerReturn<
+      WorkerModuleInput<TModule>,
+      WorkerModuleOutput<TModule>
+    >['run'],
     connect,
     disconnect,
     portCount,
