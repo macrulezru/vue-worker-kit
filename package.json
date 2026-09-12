@@ -20,7 +20,6 @@
     "typescript",
     "composable",
     "shared-worker",
-    "nuxt",
     "ssr"
   ],
   "type": "module",

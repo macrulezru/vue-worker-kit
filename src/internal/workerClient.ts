@@ -1,5 +1,6 @@
 import { toRaw } from 'vue'
 import { WorkerError, workerErrorFromSerialized } from '../errors'
+import { isDevMode } from './isDevMode'
 import type { WorkerLike, WorkerToMainMessage } from '../protocol'
 
 interface PendingRequest {
@@ -9,6 +10,9 @@ interface PendingRequest {
   onChunk?: (chunk: unknown) => void
   /** Synthetic error created at the `run()` call site — becomes `WorkerError.cause` on failure. */
   callSiteError: Error
+  /** Set after the first "chunk dropped" dev-mode warning for this request, so a handler
+   *  that calls `ctx.reportChunk()` many times only warns once, not once per chunk. */
+  chunkDropWarned?: boolean
 }
 
 export interface WorkerClient {
@@ -30,8 +34,12 @@ export interface WorkerClient {
  * Correlates `run`/`cancel` requests with `result`/`error`/`progress` responses over a
  * single worker-like transport. Shared by `useWorker()` (one worker) and the pool adapter
  * (one client per pooled worker) so the message-id bookkeeping isn't duplicated.
+ *
+ * `onCrash`, if given, fires after a `Worker.onerror` event rejects every pending request —
+ * lets the caller (e.g. `useWorker()`) null out its own worker/client references so the next
+ * call transparently creates a fresh worker, instead of reusing the crashed instance.
  */
-export function createWorkerClient(worker: WorkerLike): WorkerClient {
+export function createWorkerClient(worker: WorkerLike, onCrash?: () => void): WorkerClient {
   let nextId = 1
   const pending = new Map<number, PendingRequest>()
 
@@ -46,7 +54,17 @@ export function createWorkerClient(worker: WorkerLike): WorkerClient {
     }
 
     if (msg.type === 'chunk') {
-      entry.onChunk?.(msg.chunk)
+      if (entry.onChunk) {
+        entry.onChunk(msg.chunk)
+      } else if (isDevMode() && !entry.chunkDropWarned) {
+        entry.chunkDropWarned = true
+        console.warn(
+          '[vue-worker-kit] A worker handler called ctx.reportChunk(), but this run has no ' +
+            'chunk listener — with useWorker(), that means `streaming` is not enabled ' +
+            '(pass `{ streaming: true }`); with a pool, pass `onProgress`/`onChunk` in ' +
+            'RunOptions/WorkerMapOptions. The chunk is being silently dropped.',
+        )
+      }
       return
     }
 
@@ -63,6 +81,7 @@ export function createWorkerClient(worker: WorkerLike): WorkerClient {
     const err = new WorkerError(event.message || 'Worker crashed', { cause: callSiteError })
     for (const entry of pending.values()) entry.reject(err)
     pending.clear()
+    onCrash?.()
   }
 
   function send(

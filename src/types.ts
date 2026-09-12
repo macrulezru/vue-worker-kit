@@ -3,6 +3,14 @@ import type { WorkerHandlerModule } from './worker/defineWorkerHandler'
 export interface RunOptions {
   transfer?: Transferable[]
   signal?: AbortSignal
+  /** Per-task progress reporting — see `WorkerContext.reportProgress`. Only meaningful for
+   *  `createWorkerPool`/`useWorkerPool`'s `run()`/`map()`; `useWorker()` exposes its own
+   *  persistent `progress` ref instead and ignores this. */
+  onProgress?: (value: number) => void
+  /** Per-task streamed chunks — see `WorkerContext.reportChunk`. Only meaningful for
+   *  `createWorkerPool`/`useWorkerPool`'s `run()`/`map()`; `useWorker()` exposes its own
+   *  persistent `chunks` ref (gated by its `streaming` option) instead and ignores this. */
+  onChunk?: (chunk: unknown) => void
 }
 
 export interface WorkerMapOptions<T = unknown> {
@@ -12,6 +20,10 @@ export interface WorkerMapOptions<T = unknown> {
   signal?: AbortSignal
   /** Per-item transfer list function for zero-copy transfers. */
   transfer?: (item: T) => Transferable[]
+  /** Per-task progress reporting, shared across every item — see `RunOptions.onProgress`. */
+  onProgress?: (value: number) => void
+  /** Per-task streamed chunks, shared across every item — see `RunOptions.onChunk`. */
+  onChunk?: (chunk: unknown) => void
 }
 
 export interface UseWorkerCacheOptions {

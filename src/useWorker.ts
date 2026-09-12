@@ -4,21 +4,22 @@ import { WorkerError, WorkerUnavailableError, isAbortError, toAbortError } from 
 import { attachActivityBus, createActivityBus } from './internal/activityBus'
 import { createWorkerClient, type WorkerClient } from './internal/workerClient'
 import type { WorkerLike } from './protocol'
-import type { RunOptions, WorkerModuleInput, WorkerModuleOutput, UseWorkerCacheOptions } from './types'
+import type {
+  RunOptions,
+  WorkerModuleInput,
+  WorkerModuleOutput,
+  UseWorkerCacheOptions,
+  RetryStrategyOptions,
+  StreamingOptions,
+} from './types'
 
-export interface UseWorkerOptions {
+export interface UseWorkerOptions extends RetryStrategyOptions, StreamingOptions {
   /** Milliseconds of idle time before the worker self-terminates; `false` disables it. Default `30000`. */
   idleTimeout?: number | false
-  /** Automatic retries on rejection, not applied to cancellations. Default `0`. */
-  retries?: number
-  /** Delay function for exponential backoff. Default: immediate retry. */
-  retryDelay?: (attempt: number) => number
   /** Terminate & recreate the worker immediately on abort, instead of waiting for cooperative `ctx.signal` handling. Default `false`. */
   hardCancelOnAbort?: boolean
   /** Cache options for memoization. */
   cache?: UseWorkerCacheOptions
-  /** Enable streaming mode with chunked results. */
-  streaming?: boolean
 }
 
 export interface UseWorkerReturn<In, Out> {
@@ -29,6 +30,11 @@ export interface UseWorkerReturn<In, Out> {
   cancel(): void
   /** Pre-create the worker without running any task. */
   warmup(): Promise<void>
+  /** Terminate the underlying worker immediately (if one exists) — the next `run()`/`warmup()`
+   *  transparently creates a fresh one. Reachable before now only via the idle timer,
+   *  `hardCancelOnAbort`, or effect-scope disposal — `useWorker()` called outside an active
+   *  effect scope (a Pinia store, a plain factory) had no way to terminate on demand at all. */
+  terminate(): void
   /** Reactive array of chunks for streaming mode. */
   chunks?: ShallowRef<unknown[]>
 }
@@ -93,7 +99,14 @@ export function useWorker<TModule>(
     clearIdleTimer()
     if (!client) {
       worker = factory() as unknown as WorkerLike
-      client = createWorkerClient(worker)
+      // On a crash (Worker.onerror), null out worker/client here too — unlike the idle-timeout/
+      // hardCancelOnAbort/scope-dispose paths, a crash left this composable holding onto the
+      // same broken instance forever, so the next run() kept trying to use it.
+      client = createWorkerClient(worker, () => {
+        clearIdleTimer()
+        worker = null
+        client = null
+      })
     }
     return client
   }
@@ -247,6 +260,7 @@ export function useWorker<TModule>(
     error,
     cancel,
     warmup,
+    terminate,
   }
   if (chunks) {
     result.chunks = chunks as ShallowRef<unknown[]>
