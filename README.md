@@ -144,6 +144,12 @@ export default defineWorkerHandler(async (rows: Row[], ctx) => {
 
 > A pool without `hardCancelOnAbort` cancels running tasks cooperatively only. A queued task is rejected immediately; a running one keeps its slot until the handler yields or finishes.
 
+#### How often to call `yield()`
+
+Call it every few milliseconds of work, not on every iteration. Measured in Chromium, Firefox and WebKit with the `cancel-yield.html` stand from `demo/` (`npm run test:browser`): with about 4 ms of work between `yield()` calls, the loop stops after at most two more `yield()` calls in 100 of 100 attempts in all three browsers. One `yield()` costs about 20 µs in Chromium and Firefox and 0.3–0.4 ms in WebKit.
+
+The cancel message needs a moment to cross from the main thread to the worker. Yielding far more often than that moment (every ~0.3 ms) only adds calls to the count: in Firefox up to eight `yield()` calls were seen before the loop stopped, although it still stopped within milliseconds. A good rule: aim for 1–5 ms of work between yields.
+
 ### Concurrency modes
 
 ```ts
@@ -154,7 +160,7 @@ const search = useWorker<typeof import('./search.worker')>(factory, {
 ```
 
 - `'parallel'` (default) — every `run()` starts at once.
-- `'latest'` — a new run supersedes the previous ones: they reject with an `AbortError` whose `reason` is `WORKER_SUPERSEDED` (check with `isSupersededError()`). It is never written to `error`, and your own `signal` is not aborted.
+- `'latest'` — a new run supersedes the previous ones: they reject with an `AbortError` whose `reason` is `WORKER_SUPERSEDED` (check with `isSupersededError()`). It is never written to `error`, and your own `signal` is not aborted. With `hardCancelOnAbort` the busy worker is terminated.
 - `'serial'` — runs go one by one; `cancel()` aborts the current run and clears the queue.
 
 ### Typed operations
@@ -171,7 +177,7 @@ const tools = useWorker<typeof import('./tools.worker')>(factory)
 const parsed = await tools.call('parse', { text: 'hello' })
 ```
 
-Names, inputs and outputs are inferred. Works with `useWorker`, pools and `useSharedWorker`; an unknown name fails with `code: 'UNKNOWN_OPERATION'`.
+Names, inputs and outputs are inferred. Works with `useWorker`, pools and `useSharedWorker`; an unknown name fails with `code: 'UNKNOWN_OPERATION'`. A module made with `defineWorkerOperations()` has `call()` and no `run()`.
 
 ### Errors with data
 
@@ -179,24 +185,47 @@ Names, inputs and outputs are inferred. Works with `useWorker`, pools and `useSh
 throw new WorkerHandlerError('Bad row', { code: 'E_ROW', details: { row: 7 } })
 ```
 
-`code` and `details` arrive on the `WorkerError`. If `details` cannot be structured-cloned it is replaced by a string and `detailsDropped` is `true`.
+`code` and `details` arrive on the `WorkerError`, together with a `workerCause` chain (up to three levels). If `details` cannot be structured-cloned it is replaced by a string and `detailsDropped` is `true`.
+
+### `terminate()` on a single worker and on a pool
+
+- `useWorker().terminate()` releases the worker. The next `run()` creates a new one.
+- `pool.terminate()` closes the pool. Waiting and running tasks, and any later `run()`/`call()`/`map()`, reject with a `WorkerError` whose `code` is `'POOL_TERMINATED'` (not an `AbortError`). `warmup()` does nothing. Call `pool.restart()` to use the pool again.
+
+### Pool `affinity`
+
+`run(input, { affinity: key })` sends tasks with the same key to the same slot.
+
+- The key is bound to the slot that takes its first task. The binding is never moved: when `'prefer'` (the default) has to use another slot because the bound one is busy, later tasks go back to the bound slot once it is free.
+- `affinityMode: 'strict'` makes the task wait for the bound slot and never creates extra slots for it. Other queued tasks are not blocked.
+- When the bound slot is removed (`idleTimeout`, a crash, `hardCancelOnAbort`, `terminate()`), the key is released and binds again to the slot that takes the next task with that key.
 
 ### More options
 
 - `run(input, { onProgress, onChunk })` — per-call callbacks next to the shared refs.
 - `unwrap: 'shallow' | 'deep'` — `'deep'` copies nested reactive proxies before posting; in dev a `DataCloneError` names the path to the first proxy.
 - `useWorkerComputed(factory, source, { worker, immediate, refresh })`.
-- Pool: `idleTimeout`, `RunOptions.affinity` with `affinityMode: 'prefer' | 'strict'`.
+- Pool: `idleTimeout`, `hardCancelOnAbort` (also per call), `affinity` / `affinityMode`.
+- `chunks` is notified in coalesced batches: once per animation frame while the tab is visible, by a 50 ms timer while it is hidden.
 - The result cache key is `JSON.stringify(input)` plus the operation name: inputs that differ only in non-serializable parts share an entry.
 
 ### Which one to use
 
-| Need                                      | Use                 |
-| ----------------------------------------- | ------------------- |
-| One heavy task at a time, reactive state  | `useWorker`         |
-| Many independent small tasks across cores | `createWorkerPool`  |
-| A value derived from reactive state       | `useWorkerComputed` |
-| One computation shared by all tabs        | `useSharedWorker`   |
+| Need                                       | Use                                                              |
+| ------------------------------------------ | ---------------------------------------------------------------- |
+| One heavy task at a time, reactive state   | `useWorker`                                                      |
+| Live input, only the newest result matters | `useWorker` with `concurrency: 'latest'` and `hardCancelOnAbort` |
+| Many independent small tasks across cores  | `createWorkerPool`                                               |
+| A value derived from reactive state        | `useWorkerComputed`                                              |
+| One computation shared by all tabs         | `useSharedWorker`                                                |
+
+### Demo and browser check
+
+`demo/` has a section for each feature above and a standalone `cancel-yield.html` stand. `npm run test:browser` runs the stand in Chromium, Firefox and WebKit (install them once with `npx playwright install chromium firefox webkit`).
+
+### Keeping the AI reference in sync
+
+`tests/docs.drift.test.ts` checks that every public export is mentioned in the AI reference of the documentation site (`packages/vue-worker-kit/ai-reference.txt`). Set `VWK_AI_REFERENCE` to that file when it is not at the default location (`../../npm-center/...`). The check is skipped with a warning when the file is missing in CI, and fails locally; run it before publishing.
 
 ---
 

@@ -52,6 +52,8 @@ function cacheKeyFor(input: unknown, op: string | undefined): string {
   return op === undefined ? JSON.stringify(input) : JSON.stringify([op, input])
 }
 
+const HIDDEN_CHUNK_FLUSH_MS = 50
+
 export function createRunEngine(options: RunEngineOptions): RunEngine {
   const mode = options.concurrency ?? 'parallel'
   const retries = options.retries ?? 0
@@ -82,7 +84,9 @@ export function createRunEngine(options: RunEngineOptions): RunEngine {
   function scheduleChunkFlush(): void {
     if (!chunks || chunkFlushScheduled) return
     chunkFlushScheduled = true
-    if (typeof requestAnimationFrame === 'function') {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+      setTimeout(flushChunks, HIDDEN_CHUNK_FLUSH_MS)
+    } else if (typeof requestAnimationFrame === 'function') {
       requestAnimationFrame(flushChunks)
     } else {
       queueMicrotask(flushChunks)

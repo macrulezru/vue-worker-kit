@@ -48,3 +48,7 @@ desktop.ini
 
 # Machine-specific benchmark snapshot — numbers are meaningless outside the machine that ran them
 benchmark/results.json
+
+# Playwright
+test-results/
+playwright-report/

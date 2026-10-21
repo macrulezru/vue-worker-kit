@@ -11,6 +11,7 @@ export default defineConfig({
         // Standalone multi-tab check for useSharedWorker()'s real onconnect/port wiring —
         // deliberately outside the main Vue app so it can be driven directly by Playwright.
         sharedTest: fileURLToPath(new URL('./shared-test.html', import.meta.url)),
+        cancelYield: fileURLToPath(new URL('./cancel-yield.html', import.meta.url)),
       },
     },
   },

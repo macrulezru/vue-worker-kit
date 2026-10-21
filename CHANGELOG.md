@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-21
+
+### Fixed
+
+- `chunks` is also notified in a hidden tab: when `document.visibilityState` is not `'visible'` the batched notification is scheduled by a 50 ms timer instead of `requestAnimationFrame`, which does not fire in a background tab. A visible tab keeps `requestAnimationFrame`; the final notification when a run settles is unchanged.
+
+### Changed (behaviour fix)
+
+- After `pool.terminate()`, `run()`, `call()` and `map()` reject with `WorkerError('Worker pool terminated', { code: 'POOL_TERMINATED' })` instead of silently creating new workers, so a pool of a disposed component cannot keep working as a zombie. Tasks that were waiting or running at the moment of `terminate()` reject with the same error (they used to reject with an `AbortError`). `warmup()` still does nothing after `terminate()`. A single `useWorker().terminate()` is unchanged: the next `run()` creates a new worker.
+
+### Added
+
+- `pool.restart()` re-opens a terminated pool.
+- `npm run test:browser`: a Playwright run (Chromium, Firefox, WebKit) of the new `demo/cancel-yield.html` stand; also a non-blocking `browser` job in CI.
+- Tests: `chunks` in a hidden tab, `terminate()`/`restart()` of a pool, `affinity` rules, and a documentation drift check (`tests/docs.drift.test.ts`: every public export must be mentioned in the AI reference; set `VWK_AI_REFERENCE` when the reference is not at the default path, skipped with a warning in CI when the file is missing).
+
+### Docs
+
+- `affinity` rules written down: the binding is not moved when a task is forced onto another slot; it is released when the slot disappears (`idleTimeout`, crash, `hardCancelOnAbort`, `terminate()`) and binds again to the slot that takes the next task; `'strict'` waits for its slot and never creates extra ones.
+- README, site and AI reference synchronised with the code: concurrency modes, cooperative and hard cancellation, typed operations, errors with data, `unwrap`, `terminate()` of a single worker versus a pool, "which one to use" table, and `RunOptions.hardCancelOnAbort`/`affinity` noted as pool-only.
+- New README section "How often to call `yield()`".
+
+### Verified
+
+- `ctx.yield()` cancellation in real browsers (Playwright, 100 attempts, random cancel delay): with about 4 ms of work between `yield()` calls the loop stops after at most 2 further `yield()` calls in Chromium, Firefox and WebKit, 100 of 100, and always with an `AbortError`. Several runs repeated the result. The implementation was not changed: a `MessageChannel` yield costs about 20 µs in Chromium and Firefox and 0.3–0.4 ms in WebKit (under the 1 ms limit). Yielding every ~0.3 ms makes the number of calls grow (Firefox up to 8, WebKit up to 4) because delivering the cancel message takes longer than one yield; a `setTimeout(0)` round was measured and rejected as it costs about 5 ms per `yield()` in Chromium. Recommendation: call `yield()` every few milliseconds of work.
+- Bundle size: +273 B raw, +111 B gzip over 0.3.0 (ESM, all entries).
+
 ## [0.3.0] - 2026-10-21
 
 ### Fixed
