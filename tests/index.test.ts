@@ -24,10 +24,17 @@ describe('package root barrel (src/index.ts)', () => {
       'createCacheKey',
       'WorkerError',
       'WorkerUnavailableError',
+      'defineWorkerOperations',
+      'WorkerHandlerError',
+      'WORKER_SUPERSEDED',
+      'isSupersededError',
     ] as const
 
     for (const name of expectedRuntimeExports) {
-      expect(pkg[name], `expected src/index.ts to export a runtime value named "${name}"`).toBeDefined()
+      expect(
+        pkg[name],
+        `expected src/index.ts to export a runtime value named "${name}"`,
+      ).toBeDefined()
     }
   })
 })

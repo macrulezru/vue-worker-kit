@@ -21,7 +21,11 @@ function formatTime(at: number): string {
 <template>
   <div
     style="
-      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font:
+        12px/1.4 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
       border: 1px solid #3336;
       border-radius: 6px;
       padding: 10px 12px;
@@ -33,17 +37,32 @@ function formatTime(at: number): string {
     <div style="font-weight: 600; margin-bottom: 6px">vue-worker-kit — activity</div>
 
     <div style="display: flex; gap: 12px; margin-bottom: 8px">
-      <div><strong>{{ snapshot.busy }}</strong> busy</div>
-      <div><strong>{{ snapshot.idle }}</strong> idle</div>
-      <div><strong>{{ snapshot.queued }}</strong> queued</div>
-      <div>avg <strong>{{ formatMs(snapshot.averageTaskMs) }}</strong></div>
+      <div>
+        <strong>{{ snapshot.busy }}</strong> busy
+      </div>
+      <div>
+        <strong>{{ snapshot.idle }}</strong> idle
+      </div>
+      <div>
+        <strong>{{ snapshot.queued }}</strong> queued
+      </div>
+      <div>
+        avg <strong>{{ formatMs(snapshot.averageTaskMs) }}</strong>
+      </div>
     </div>
 
     <div style="display: flex; align-items: center; justify-content: space-between">
       <span style="opacity: 0.7">recent errors ({{ snapshot.recentErrors.length }})</span>
       <button
         type="button"
-        style="font: inherit; cursor: pointer; background: none; border: none; color: inherit; opacity: 0.7"
+        style="
+          font: inherit;
+          cursor: pointer;
+          background: none;
+          border: none;
+          color: inherit;
+          opacity: 0.7;
+        "
         @click="monitor.clearErrors()"
       >
         clear

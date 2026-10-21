@@ -1,17 +1,20 @@
 import { getCurrentScope, onScopeDispose, reactive, readonly, shallowRef, watch } from 'vue'
 import type { WorkerError } from '../errors'
-import { useWorker } from '../useWorker'
+import { useWorker, type UseWorkerOptions, type UseWorkerReturn } from '../useWorker'
 import type { WorkerModuleInput, WorkerModuleOutput } from '../types'
 
 export interface UseWorkerComputedOptions {
   /** Milliseconds to wait after the source stops changing before firing the worker. Default `0`. */
   debounce?: number
+  worker?: UseWorkerOptions
+  immediate?: boolean
 }
 
 export interface WorkerComputedResult<Out> {
   readonly value: Out | undefined
   readonly isRunning: boolean
   readonly error: WorkerError | null
+  readonly refresh: () => void
 }
 
 /**
@@ -25,7 +28,11 @@ export function useWorkerComputed<TModule>(
   options: UseWorkerComputedOptions = {},
 ): WorkerComputedResult<WorkerModuleOutput<TModule>> {
   const debounceMs = options.debounce ?? 0
-  const { run, isRunning, error } = useWorker<TModule>(factory)
+  const immediate = options.immediate ?? true
+  const { run, isRunning, error } = useWorker<TModule>(
+    factory,
+    options.worker,
+  ) as unknown as UseWorkerReturn<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>
 
   const value = shallowRef<WorkerModuleOutput<TModule> | undefined>(undefined)
 
@@ -60,7 +67,15 @@ export function useWorkerComputed<TModule>(
     }
   }
 
-  const stopWatch = watch(source, schedule, { immediate: true })
+  const stopWatch = watch(source, schedule, { immediate })
+
+  function refresh(): void {
+    if (debounceTimer !== undefined) {
+      clearTimeout(debounceTimer)
+      debounceTimer = undefined
+    }
+    fire(source())
+  }
 
   if (getCurrentScope()) {
     onScopeDispose(() => {
@@ -73,7 +88,7 @@ export function useWorkerComputed<TModule>(
   // readonly() — not just the type annotation — so `result.value = x` actually throws a dev-mode
   // warning and is a no-op, instead of silently succeeding against the plain reactive() wrapper
   // the type signature already claimed (but didn't enforce) was readonly.
-  return readonly(reactive({ value, isRunning, error })) as WorkerComputedResult<
+  return readonly(reactive({ value, isRunning, error, refresh })) as WorkerComputedResult<
     WorkerModuleOutput<TModule>
   >
 }

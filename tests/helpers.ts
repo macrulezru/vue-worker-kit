@@ -3,11 +3,17 @@ import {
   attachWorkerProtocol,
   type WorkerHandlerFn,
   type WorkerHandlerModule,
+  type WorkerOperationMap,
+  type WorkerOperationsModule,
 } from '../src/worker/defineWorkerHandler'
 import type { MessagePortLike, SharedWorkerScopeLike, WorkerScopeLike } from '../src/protocol'
 
 /** `typeof import('./x.worker')` shape, built from a raw handler function's In/Out types. */
 export type FixtureModule<In, Out> = { default: WorkerHandlerModule<In, Out> }
+
+export type OperationsFixtureModule<Ops extends WorkerOperationMap> = {
+  default: WorkerOperationsModule<Ops>
+}
 
 export interface TestWorkerHooks {
   onTerminate?: () => void
@@ -22,7 +28,7 @@ export interface TestWorkerHooks {
  * worker — the fake only skips actual thread isolation, not the message-passing contract.
  */
 export function createTestWorker<In, Out>(
-  handler: WorkerHandlerFn<In, Out>,
+  handler: WorkerHandlerFn<In, Out> | WorkerOperationMap,
   hooks: TestWorkerHooks = {},
 ): Worker {
   const workerScope: WorkerScopeLike = {
@@ -70,7 +76,9 @@ export function createCrashingTestWorker(message: string): Worker {
  * worker-global instance behind `handler`. Every `postMessage` crosses through a real
  * `structuredClone`, same rationale as `createTestWorker`.
  */
-export function createTestSharedWorker<In, Out>(handler: WorkerHandlerFn<In, Out>): () => SharedWorker {
+export function createTestSharedWorker<In, Out>(
+  handler: WorkerHandlerFn<In, Out> | WorkerOperationMap,
+): () => SharedWorker {
   const scope: SharedWorkerScopeLike = { onconnect: null }
   attachSharedWorkerProtocol(handler, scope)
 
@@ -114,4 +122,32 @@ export function waitFor(condition: () => boolean, timeoutMs = 1000): Promise<voi
     }
     check()
   })
+}
+
+export interface ControllableTestWorker {
+  worker: Worker
+  crash(message?: string): void
+  terminated: boolean
+}
+
+export function createControllableTestWorker<In, Out>(
+  handler: WorkerHandlerFn<In, Out> | WorkerOperationMap,
+): ControllableTestWorker {
+  const hooks = { terminated: false }
+  const worker = createTestWorker(handler, {
+    onTerminate: () => {
+      hooks.terminated = true
+    },
+  })
+  return {
+    worker,
+    crash(message = 'crashed') {
+      ;(worker as unknown as { onerror: ((event: ErrorEvent) => void) | null }).onerror?.({
+        message,
+      } as ErrorEvent)
+    },
+    get terminated() {
+      return hooks.terminated
+    },
+  }
 }

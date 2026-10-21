@@ -1,14 +1,11 @@
 import { computed, ref } from 'vue'
 import type { ComputedRef } from 'vue'
 import { readActivityBus } from '../internal/activityBus'
-import type { WorkerPool } from '../adapters/pool'
-import type { UseWorkerReturn } from '../useWorker'
-import type { UseSharedWorkerReturn } from '../adapters/sharedWorker'
+import type { WorkerPoolCommon } from '../adapters/pool'
+import type { UseWorkerCommon } from '../useWorker'
+import type { UseSharedWorkerCommon } from '../adapters/sharedWorker'
 
-export type WorkerActivitySource =
-  | WorkerPool<unknown, unknown>
-  | UseWorkerReturn<unknown, unknown>
-  | UseSharedWorkerReturn<unknown, unknown>
+export type WorkerActivitySource = WorkerPoolCommon | UseWorkerCommon | UseSharedWorkerCommon
 
 export interface WorkerActivityError {
   name: string
@@ -38,7 +35,7 @@ export interface WorkerActivityMonitor {
   dispose(): void
 }
 
-function isPoolSource(source: WorkerActivitySource): source is WorkerPool<unknown, unknown> {
+function isPoolSource(source: WorkerActivitySource): source is WorkerPoolCommon {
   return 'stats' in source
 }
 
