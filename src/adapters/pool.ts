@@ -1,6 +1,6 @@
 import { computed, getCurrentScope, onScopeDispose, ref } from 'vue'
 import type { ComputedRef } from 'vue'
-import { WorkerUnavailableError, toAbortError } from '../errors'
+import { WorkerError, WorkerUnavailableError, toAbortError } from '../errors'
 import { attachActivityBus, createActivityBus } from '../internal/activityBus'
 import { createWorkerClient, type WorkerClient } from '../internal/workerClient'
 import type { WorkerLike } from '../protocol'
@@ -49,6 +49,7 @@ export interface WorkerPoolCommon {
   readonly stats: ComputedRef<WorkerPoolStats>
   readonly size: number
   terminate(): void
+  restart(): void
   /** Pre-create all workers up to `size` without running any tasks. */
   warmup(): Promise<void>
 }
@@ -133,7 +134,7 @@ export function createWorkerPool<TModule>(
     }, idleTimeout)
   }
 
-  function removeSlot(slot: Slot): void {
+  function removeSlot(slot: Slot, reason?: Error): void {
     if (slot.dead) return
     slot.dead = true
     clearSlotTimer(slot)
@@ -149,7 +150,7 @@ export function createWorkerPool<TModule>(
     for (const [key, owner] of Array.from(affinitySlots)) {
       if (owner === slot) affinitySlots.delete(key)
     }
-    slot.client.dispose(toAbortError('Worker slot terminated'))
+    slot.client.dispose(reason ?? toAbortError('Worker slot terminated'))
     slot.worker.terminate()
   }
 
@@ -259,6 +260,10 @@ export function createWorkerPool<TModule>(
 
   function run(input: unknown, runOptions: RunOptions = {}): Promise<unknown> {
     return new Promise((resolve, reject) => {
+      if (terminated) {
+        reject(createTerminatedError())
+        return
+      }
       const signal = runOptions.signal
       if (signal?.aborted) {
         reject(toAbortError(signal.reason))
@@ -330,23 +335,31 @@ export function createWorkerPool<TModule>(
     while (slots.length < size) scheduleSlotIdle(createSlot())
   }
 
+  function createTerminatedError(): WorkerError {
+    return new WorkerError('Worker pool terminated', { code: 'POOL_TERMINATED' })
+  }
+
+  function restart(): void {
+    terminated = false
+  }
+
   function terminate(): void {
     terminated = true
-    for (const slot of Array.from(slots)) removeSlot(slot)
+    for (const slot of Array.from(slots)) removeSlot(slot, createTerminatedError())
     slots.length = 0
     slotCount.value = 0
     affinitySlots.clear()
     busyCount.value = 0
     for (const task of queue) {
       task.detachQueuedAbort?.()
-      task.reject(toAbortError('Worker pool terminated'))
+      task.reject(createTerminatedError())
     }
     queue.length = 0
     queuedCount.value = 0
   }
 
   return attachActivityBus(
-    { run, call, map, stats, size, terminate, warmup },
+    { run, call, map, stats, size, terminate, restart, warmup },
     activityBus,
   ) as unknown as WorkerPoolFor<TModule>
 }

@@ -1,6 +1,6 @@
 {
   "name": "vue-worker-kit",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Type-safe Web Worker composables for Vue 3 — useWorker(), worker pool, reactive useWorkerComputed(), zero dependencies, SSR-safe.",
   "author": "macrulez <macrulezru@gmail.com> (https://macrulez.ru/en)",
   "license": "MIT",
@@ -74,6 +74,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:browser": "playwright test",
     "typecheck": "vue-tsc --noEmit",
     "demo": "npm run dev --prefix demo",
     "prepublishOnly": "npm run typecheck && npm run lint:check && npm run test && npm run build",
@@ -87,6 +88,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.1",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vitest/coverage-v8": "^4.1.11",
     "@vue/test-utils": "^2.4.0",

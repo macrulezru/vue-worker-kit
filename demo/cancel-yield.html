@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>cancel + yield stand</title>
+  </head>
+  <body>
+    <h1>cancel + yield</h1>
+    <p>
+      A worker loop with <code>await ctx.yield()</code> every 20 000 iterations. Cancel it and see
+      how many <code>yield()</code> calls the worker makes after <code>cancel()</code>.
+    </p>
+    <button id="start">Start</button>
+    <button id="cancel">Cancel</button>
+    <button id="repeat">Repeat 100 times (random cancel delay)</button>
+    <pre id="output"></pre>
+    <script type="module" src="/src/cancelYield.ts"></script>
+  </body>
+</html>

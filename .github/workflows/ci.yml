@@ -72,3 +72,29 @@ jobs:
 
       - run: npm run build
         working-directory: demo
+
+  browser:
+    name: browser (cancel + yield)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.13'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            demo/package-lock.json
+
+      - run: npm ci
+
+      - run: npm ci
+        working-directory: demo
+
+      - run: npx playwright install --with-deps chromium firefox webkit
+
+      - run: npm run test:browser
