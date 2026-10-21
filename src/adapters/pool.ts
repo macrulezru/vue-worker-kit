@@ -4,9 +4,21 @@ import { WorkerUnavailableError, toAbortError } from '../errors'
 import { attachActivityBus, createActivityBus } from '../internal/activityBus'
 import { createWorkerClient, type WorkerClient } from '../internal/workerClient'
 import type { WorkerLike } from '../protocol'
-import type { RunOptions, WorkerMapOptions, WorkerModuleInput, WorkerModuleOutput } from '../types'
+import type { WorkerOperationMap } from '../worker/defineWorkerHandler'
+import type {
+  RunOptions,
+  UnwrapMode,
+  UnwrapOptions,
+  WorkerMapOptions,
+  WorkerModuleInput,
+  WorkerModuleOperations,
+  WorkerModuleOutput,
+  WorkerOperationsCaller,
+} from '../types'
 
-export interface WorkerPoolOptions {
+export type AffinityMode = 'prefer' | 'strict'
+
+export interface WorkerPoolOptions extends UnwrapOptions {
   /**
    * Number of workers to create, lazily, as tasks arrive. Defaults to
    * `navigator.hardwareConcurrency` — the browser's own report of available logical
@@ -15,6 +27,9 @@ export interface WorkerPoolOptions {
    * `4` where `navigator` doesn't exist (SSR) or doesn't report it.
    */
   size?: number
+  hardCancelOnAbort?: boolean
+  idleTimeout?: number | false
+  affinityMode?: AffinityMode
 }
 
 function defaultPoolSize(): number {
@@ -30,9 +45,7 @@ export interface WorkerPoolStats {
   queued: number
 }
 
-export interface WorkerPool<In, Out> {
-  run(input: In, options?: RunOptions): Promise<Out>
-  map(items: In[], options?: WorkerMapOptions<In>): Promise<Out[]>
+export interface WorkerPoolCommon {
   readonly stats: ComputedRef<WorkerPoolStats>
   readonly size: number
   terminate(): void
@@ -40,12 +53,29 @@ export interface WorkerPool<In, Out> {
   warmup(): Promise<void>
 }
 
+export interface WorkerPool<In, Out> extends WorkerPoolCommon {
+  run(input: In, options?: RunOptions): Promise<Out>
+  map(items: In[], options?: WorkerMapOptions<In>): Promise<Out[]>
+}
+
+export interface WorkerPoolOperations<Ops extends WorkerOperationMap>
+  extends WorkerPoolCommon, WorkerOperationsCaller<Ops> {}
+
+export type WorkerPoolFor<TModule> = [WorkerModuleOperations<TModule>] extends [never]
+  ? WorkerPool<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>
+  : WorkerPoolOperations<WorkerModuleOperations<TModule>>
+
 interface QueuedTask {
   input: unknown
   transfer?: Transferable[]
   signal?: AbortSignal
   onProgress?: (value: number) => void
   onChunk?: (chunk: unknown) => void
+  op?: string
+  unwrap: UnwrapMode
+  hardCancel: boolean
+  affinity?: string | number
+  detachQueuedAbort?: () => void
   resolve(output: unknown): void
   reject(error: unknown): void
 }
@@ -54,6 +84,8 @@ interface Slot {
   worker: WorkerLike
   client: WorkerClient
   busy: boolean
+  dead: boolean
+  idleTimer?: ReturnType<typeof setTimeout>
 }
 
 /**
@@ -64,61 +96,124 @@ interface Slot {
 export function createWorkerPool<TModule>(
   factory: () => Worker,
   options: WorkerPoolOptions = {},
-): WorkerPool<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>> {
+): WorkerPoolFor<TModule> {
   const size = options.size ?? defaultPoolSize()
+  const hardCancelDefault = options.hardCancelOnAbort ?? false
+  const idleTimeout = options.idleTimeout ?? false
+  const affinityMode = options.affinityMode ?? 'prefer'
+  const defaultUnwrap = options.unwrap ?? 'shallow'
   const slots: Slot[] = []
   const queue: QueuedTask[] = []
+  const affinitySlots = new Map<string | number, Slot>()
   const busyCount = ref(0)
   const queuedCount = ref(0)
+  const slotCount = ref(0)
   const activityBus = createActivityBus()
   let terminated = false
 
   const stats = computed<WorkerPoolStats>(() => ({
     busy: busyCount.value,
-    idle: slots.length - busyCount.value,
+    idle: slotCount.value - busyCount.value,
     queued: queuedCount.value,
   }))
+
+  function clearSlotTimer(slot: Slot): void {
+    if (slot.idleTimer !== undefined) {
+      clearTimeout(slot.idleTimer)
+      slot.idleTimer = undefined
+    }
+  }
+
+  function scheduleSlotIdle(slot: Slot): void {
+    clearSlotTimer(slot)
+    if (idleTimeout === false || slot.dead || slot.busy) return
+    slot.idleTimer = setTimeout(() => {
+      slot.idleTimer = undefined
+      if (!slot.busy) removeSlot(slot)
+    }, idleTimeout)
+  }
+
+  function removeSlot(slot: Slot): void {
+    if (slot.dead) return
+    slot.dead = true
+    clearSlotTimer(slot)
+    const index = slots.indexOf(slot)
+    if (index >= 0) {
+      slots.splice(index, 1)
+      slotCount.value = slots.length
+    }
+    if (slot.busy) {
+      slot.busy = false
+      busyCount.value--
+    }
+    for (const [key, owner] of Array.from(affinitySlots)) {
+      if (owner === slot) affinitySlots.delete(key)
+    }
+    slot.client.dispose(toAbortError('Worker slot terminated'))
+    slot.worker.terminate()
+  }
 
   function createSlot(): Slot {
     if (typeof Worker === 'undefined') {
       throw new WorkerUnavailableError()
     }
     const worker = factory() as unknown as WorkerLike
-    const slot: Slot = { worker, client: createWorkerClient(worker), busy: false }
+    const slot = { worker, busy: false, dead: false } as Slot
+    slot.client = createWorkerClient(worker, () => {
+      removeSlot(slot)
+      pump()
+    })
     slots.push(slot)
+    slotCount.value = slots.length
     return slot
   }
 
+  function pickSlot(task: QueuedTask): Slot | undefined {
+    const preferred = task.affinity !== undefined ? affinitySlots.get(task.affinity) : undefined
+    if (preferred && !preferred.busy) return preferred
+    if (preferred && affinityMode === 'strict') return undefined
+    const free = slots.find((candidate) => !candidate.busy)
+    if (free) return free
+    if (slots.length >= size) return undefined
+    return createSlot()
+  }
+
   function pump(): void {
-    while (queue.length > 0) {
-      let slot = slots.find((s) => !s.busy)
+    let index = 0
+    while (index < queue.length) {
+      const task = queue[index]
+      const slot = pickSlot(task)
       if (!slot) {
-        if (slots.length >= size) return
-        slot = createSlot()
+        index++
+        continue
       }
-      const task = queue.shift()!
+      queue.splice(index, 1)
       queuedCount.value--
+      task.detachQueuedAbort?.()
       dispatch(slot, task)
     }
   }
 
   function dispatch(slot: Slot, task: QueuedTask): void {
+    clearSlotTimer(slot)
     slot.busy = true
     busyCount.value++
+    if (task.affinity !== undefined && !affinitySlots.has(task.affinity)) {
+      affinitySlots.set(task.affinity, slot)
+    }
 
-    const internalController = task.signal ? null : new AbortController()
-    const signal = task.signal ?? internalController!.signal
+    const signal = task.signal
 
     const finish = (): void => {
-      // terminate() already zeroed out busyCount/slots synchronously — a settlement arriving
-      // afterwards (from a client.dispose()-triggered rejection) must not double-decrement it.
-      if (terminated) return
-      slot.busy = false
-      busyCount.value--
+      if (!slot.dead) {
+        slot.busy = false
+        busyCount.value--
+        scheduleSlotIdle(slot)
+      }
       pump()
     }
 
-    if (signal.aborted) {
+    if (signal?.aborted) {
       task.reject(toAbortError(signal.reason))
       finish()
       return
@@ -131,23 +226,28 @@ export function createWorkerPool<TModule>(
       task.transfer,
       task.onProgress,
       task.onChunk,
+      {
+        op: task.op,
+        unwrap: task.unwrap,
+      },
     )
     const onAbort = (): void => {
-      slot.client.cancel(id, signal.reason)
-      task.reject(toAbortError(signal.reason))
+      slot.client.cancel(id, signal?.reason)
+      task.reject(toAbortError(signal?.reason))
+      if (task.hardCancel) removeSlot(slot)
     }
-    signal.addEventListener('abort', onAbort, { once: true })
+    signal?.addEventListener('abort', onAbort, { once: true })
     promise.then(
       (value) => {
-        signal.removeEventListener('abort', onAbort)
+        signal?.removeEventListener('abort', onAbort)
         activityBus.emit.taskEnd(Date.now() - startedAt)
         task.resolve(value)
         finish()
       },
       (err) => {
-        signal.removeEventListener('abort', onAbort)
+        signal?.removeEventListener('abort', onAbort)
         activityBus.emit.taskEnd(Date.now() - startedAt)
-        if (!signal.aborted) {
+        if (!signal?.aborted) {
           const workerError = err as Error
           activityBus.emit.taskError({ name: workerError.name, message: workerError.message })
           task.reject(err)
@@ -159,18 +259,43 @@ export function createWorkerPool<TModule>(
 
   function run(input: unknown, runOptions: RunOptions = {}): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      queue.push({
+      const signal = runOptions.signal
+      if (signal?.aborted) {
+        reject(toAbortError(signal.reason))
+        return
+      }
+      const task: QueuedTask = {
         input,
         transfer: runOptions.transfer,
-        signal: runOptions.signal,
+        signal,
         onProgress: runOptions.onProgress,
         onChunk: runOptions.onChunk,
+        op: runOptions.op,
+        unwrap: runOptions.unwrap ?? defaultUnwrap,
+        hardCancel: runOptions.hardCancelOnAbort ?? hardCancelDefault,
+        affinity: runOptions.affinity,
         resolve,
         reject,
-      })
+      }
+      if (signal) {
+        const onQueuedAbort = (): void => {
+          const index = queue.indexOf(task)
+          if (index < 0) return
+          queue.splice(index, 1)
+          queuedCount.value--
+          reject(toAbortError(signal.reason))
+        }
+        signal.addEventListener('abort', onQueuedAbort, { once: true })
+        task.detachQueuedAbort = () => signal.removeEventListener('abort', onQueuedAbort)
+      }
+      queue.push(task)
       queuedCount.value++
       pump()
     })
+  }
+
+  function call(name: string, input: unknown, runOptions: RunOptions = {}): Promise<unknown> {
+    return run(input, { ...runOptions, op: name })
   }
 
   async function map(items: unknown[], mapOptions: WorkerMapOptions = {}): Promise<unknown[]> {
@@ -190,6 +315,8 @@ export function createWorkerPool<TModule>(
           signal: globalSignal,
           onProgress: mapOptions.onProgress,
           onChunk: mapOptions.onChunk,
+          hardCancelOnAbort: mapOptions.hardCancelOnAbort,
+          unwrap: mapOptions.unwrap,
         })
       }
     }
@@ -200,40 +327,35 @@ export function createWorkerPool<TModule>(
 
   async function warmup(): Promise<void> {
     if (terminated) return
-    while (slots.length < size) createSlot()
+    while (slots.length < size) scheduleSlotIdle(createSlot())
   }
 
   function terminate(): void {
     terminated = true
-    for (const slot of slots) {
-      slot.client.dispose(toAbortError('Worker pool terminated'))
-      slot.worker.terminate()
-    }
+    for (const slot of Array.from(slots)) removeSlot(slot)
     slots.length = 0
+    slotCount.value = 0
+    affinitySlots.clear()
     busyCount.value = 0
-    for (const task of queue) task.reject(toAbortError('Worker pool terminated'))
+    for (const task of queue) {
+      task.detachQueuedAbort?.()
+      task.reject(toAbortError('Worker pool terminated'))
+    }
     queue.length = 0
     queuedCount.value = 0
   }
 
   return attachActivityBus(
-    {
-      run: run as WorkerPool<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>['run'],
-      map: map as WorkerPool<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>>['map'],
-      stats,
-      size,
-      terminate,
-      warmup,
-    },
+    { run, call, map, stats, size, terminate, warmup },
     activityBus,
-  )
+  ) as unknown as WorkerPoolFor<TModule>
 }
 
 /** Same as `createWorkerPool`, but auto-terminates via `onScopeDispose` when used inside `setup()`. */
 export function useWorkerPool<TModule>(
   factory: () => Worker,
   options: WorkerPoolOptions = {},
-): WorkerPool<WorkerModuleInput<TModule>, WorkerModuleOutput<TModule>> {
+): WorkerPoolFor<TModule> {
   const pool = createWorkerPool<TModule>(factory, options)
   if (getCurrentScope()) {
     onScopeDispose(() => pool.terminate())

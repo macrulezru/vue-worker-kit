@@ -47,7 +47,8 @@ describe('useSharedWorker', () => {
 
   test('a rejected run surfaces a WorkerError and clears isRunning', async () => {
     const factory = createTestSharedWorker(throwingHandler)
-    const { run, error, isRunning } = useSharedWorker<typeof import('./fixtures/throwing.worker')>(factory)
+    const { run, error, isRunning } =
+      useSharedWorker<typeof import('./fixtures/throwing.worker')>(factory)
 
     await expect(run({ message: 'boom' })).rejects.toThrow('boom')
     expect(error.value?.message).toBe('boom')

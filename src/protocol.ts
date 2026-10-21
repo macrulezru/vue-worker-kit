@@ -4,6 +4,7 @@ export interface RunRequestMessage {
   readonly type: 'run'
   readonly id: WorkerRequestId
   readonly input: unknown
+  readonly op?: string
 }
 
 export interface CancelRequestMessage {
@@ -19,10 +20,19 @@ export interface DisconnectMessage {
 
 export type MainToWorkerMessage = RunRequestMessage | CancelRequestMessage | DisconnectMessage
 
+export interface SerializedErrorCause {
+  readonly name: string
+  readonly message: string
+}
+
 export interface SerializedError {
   readonly name: string
   readonly message: string
   readonly stack?: string
+  readonly code?: string
+  readonly details?: unknown
+  readonly detailsDropped?: boolean
+  readonly cause?: readonly SerializedErrorCause[]
 }
 
 export interface ResultResponseMessage {
@@ -56,7 +66,8 @@ export interface PortCountMessage {
 }
 
 /** The id-correlated subset of worker→main messages — every request/response pair `createWorkerClient()` tracks in `pending`. */
-export type WorkerToMainMessage = ResultResponseMessage | ErrorResponseMessage | ProgressResponseMessage | ChunkResponseMessage
+export type WorkerToMainMessage =
+  ResultResponseMessage | ErrorResponseMessage | ProgressResponseMessage | ChunkResponseMessage
 
 /** Full wire protocol for a `SharedWorker`'s port — adds the un-correlated `portCount` broadcast, which isn't a response to any particular request and has no `id`. */
 export type SharedWorkerToMainMessage = WorkerToMainMessage | PortCountMessage
@@ -88,9 +99,76 @@ export interface SharedWorkerScopeLike {
   onconnect: ((event: { ports: readonly MessagePortLike[] }) => void) | null
 }
 
+const MAX_CAUSE_DEPTH = 3
+
+function collectCauses(err: unknown): SerializedErrorCause[] | undefined {
+  const causes: SerializedErrorCause[] = []
+  let current: unknown = err instanceof Error ? err.cause : undefined
+  while (current !== undefined && causes.length < MAX_CAUSE_DEPTH) {
+    if (current instanceof Error) {
+      causes.push({ name: current.name, message: current.message })
+      current = current.cause
+    } else {
+      causes.push({
+        name: 'Error',
+        message: typeof current === 'string' ? current : String(current),
+      })
+      break
+    }
+  }
+  return causes.length > 0 ? causes : undefined
+}
+
+function describeDetails(details: unknown): string {
+  try {
+    return JSON.stringify(details) ?? String(details)
+  } catch {
+    return Object.prototype.toString.call(details)
+  }
+}
+
+function isCloneable(value: unknown): boolean {
+  try {
+    structuredClone(value)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function withErrorData(base: SerializedError, source: object): SerializedError {
+  const { code, details } = source as { code?: unknown; details?: unknown }
+  const extra: { code?: string; details?: unknown; detailsDropped?: boolean } = {}
+  if (typeof code === 'string') extra.code = code
+  if (details !== undefined) {
+    if (isCloneable(details)) {
+      extra.details = details
+    } else {
+      extra.details = describeDetails(details)
+      extra.detailsDropped = true
+    }
+  }
+  return { ...base, ...extra }
+}
+
 export function serializeError(err: unknown): SerializedError {
   if (err instanceof Error) {
-    return { name: err.name, message: err.message, stack: err.stack }
+    const cause = collectCauses(err)
+    const base: SerializedError = {
+      name: err.name,
+      message: err.message,
+      stack: err.stack,
+      ...(cause ? { cause } : {}),
+    }
+    return withErrorData(base, err)
+  }
+  if (typeof err === 'object' && err !== null) {
+    const message = (err as { message?: unknown }).message
+    const base: SerializedError = {
+      name: 'Error',
+      message: typeof message === 'string' ? message : (JSON.stringify(err) ?? String(err)),
+    }
+    return withErrorData(base, err)
   }
   return { name: 'Error', message: typeof err === 'string' ? err : JSON.stringify(err) }
 }

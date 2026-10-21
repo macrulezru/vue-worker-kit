@@ -1,3 +1,5 @@
+import { toAbortError } from '../errors'
+import { WorkerHandlerError } from './handlerError'
 import {
   createProgressThrottle,
   serializeError,
@@ -23,6 +25,8 @@ export interface WorkerContext {
    * main thread and can be consumed incrementally without waiting for the full result.
    */
   reportChunk(chunk: unknown): void
+  throwIfAborted(): void
+  yield(): Promise<void>
 }
 
 /**
@@ -36,6 +40,70 @@ export interface WorkerHandlerModule<In = unknown, Out = unknown> {
 }
 
 export type WorkerHandlerFn<In, Out> = (input: In, ctx: WorkerContext) => Out | Promise<Out>
+
+export type WorkerOperationMap = {
+  readonly [name: string]: (input: never, ctx: WorkerContext) => unknown
+}
+
+export interface WorkerOperationsModule<Ops extends WorkerOperationMap = WorkerOperationMap> {
+  readonly __operations?: Ops
+}
+
+export { WorkerHandlerError, type WorkerHandlerErrorOptions } from './handlerError'
+
+type Dispatcher = (op: string | undefined, input: unknown, ctx: WorkerContext) => unknown
+
+function createDispatcher(
+  handler: WorkerHandlerFn<unknown, unknown> | WorkerOperationMap,
+): Dispatcher {
+  if (typeof handler === 'function') {
+    return (op, input, ctx) => {
+      if (op !== undefined) {
+        throw new WorkerHandlerError(
+          `Unknown operation "${op}": this worker defines a single handler.`,
+          {
+            code: 'UNKNOWN_OPERATION',
+            details: { operation: op, available: [] },
+          },
+        )
+      }
+      return handler(input, ctx)
+    }
+  }
+  return (op, input, ctx) => {
+    const operation =
+      op !== undefined && Object.prototype.hasOwnProperty.call(handler, op)
+        ? handler[op]
+        : undefined
+    if (typeof operation !== 'function') {
+      throw new WorkerHandlerError(
+        op === undefined
+          ? 'This worker defines named operations: call one by name.'
+          : `Unknown operation "${op}".`,
+        {
+          code: 'UNKNOWN_OPERATION',
+          details: { operation: op ?? null, available: Object.keys(handler) },
+        },
+      )
+    }
+    return (operation as (input: unknown, ctx: WorkerContext) => unknown)(input, ctx)
+  }
+}
+
+function yieldToEventLoop(): Promise<void> {
+  if (typeof MessageChannel !== 'undefined') {
+    return new Promise((resolve) => {
+      const channel = new MessageChannel()
+      channel.port1.onmessage = () => {
+        channel.port1.close()
+        channel.port2.close()
+        resolve()
+      }
+      channel.port2.postMessage(null)
+    })
+  }
+  return new Promise((resolve) => setTimeout(resolve, 0))
+}
 
 function isDedicatedWorkerScope(): boolean {
   return (
@@ -64,10 +132,13 @@ export interface WorkerProtocolHandle {
  * needing a real `WorkerGlobalScope` (which only exists inside an actual worker thread).
  */
 export function attachWorkerProtocol<In, Out>(
-  handler: WorkerHandlerFn<In, Out>,
+  handler: WorkerHandlerFn<In, Out> | WorkerOperationMap,
   scope: WorkerScopeLike = self as unknown as WorkerScopeLike,
 ): WorkerProtocolHandle {
   const controllers = new Map<number, AbortController>()
+  const dispatch = createDispatcher(
+    handler as WorkerHandlerFn<unknown, unknown> | WorkerOperationMap,
+  )
 
   scope.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
     const msg = event.data
@@ -97,10 +168,17 @@ export function attachWorkerProtocol<In, Out>(
       reportChunk(chunk) {
         scope.postMessage({ type: 'chunk', id: msg.id, chunk })
       },
+      throwIfAborted() {
+        if (controller.signal.aborted) throw toAbortError(controller.signal.reason)
+      },
+      async yield() {
+        await yieldToEventLoop()
+        ctx.throwIfAborted()
+      },
     }
 
     Promise.resolve()
-      .then(() => handler(msg.input as In, ctx))
+      .then(() => dispatch(msg.op, msg.input, ctx))
       .then((output) => {
         controllers.delete(msg.id)
         // Unthrottled, unlike ctx.reportProgress — a handler that only reports progress at
@@ -139,7 +217,7 @@ export function attachWorkerProtocol<In, Out>(
  * for a client that already rejected the promise and closed its port.
  */
 export function attachSharedWorkerProtocol<In, Out>(
-  handler: WorkerHandlerFn<In, Out>,
+  handler: WorkerHandlerFn<In, Out> | WorkerOperationMap,
   scope: SharedWorkerScopeLike = self as unknown as SharedWorkerScopeLike,
 ): void {
   const ports = new Set<MessagePortLike>()
@@ -193,4 +271,15 @@ export function defineWorkerHandler<In, Out>(
     attachWorkerProtocol(handler)
   }
   return {} as WorkerHandlerModule<In, Out>
+}
+
+export function defineWorkerOperations<const Ops extends WorkerOperationMap>(
+  operations: Ops,
+): WorkerOperationsModule<Ops> {
+  if (isSharedWorkerScope()) {
+    attachSharedWorkerProtocol(operations)
+  } else if (isDedicatedWorkerScope()) {
+    attachWorkerProtocol(operations)
+  }
+  return {} as WorkerOperationsModule<Ops>
 }

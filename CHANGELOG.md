@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-21
+
+### Fixed
+
+- `chunks` of `useWorker()` / `useSharedWorker()` is now reactive: every push is followed by a `triggerRef`, coalesced into one microtask/frame, so a watcher or template sees the stream as it arrives.
+- A worker pool recovers from a crashed worker: the dead slot is removed and terminated, `busyCount` / `stats` stay correct, and the queue goes on with freshly created slots.
+
+### Added
+
+- Pool: queued tasks can be cancelled (the promise rejects at once, `queued` drops) and `hardCancelOnAbort` (pool option, `RunOptions`, `WorkerMapOptions`; the call wins) terminates the slot of the cancelled task. A `map()` with a shared signal ends every busy slot.
+- `ctx.yield()` and `ctx.throwIfAborted()` for cooperative cancellation in long loops.
+- `run(input, { onProgress, onChunk })` on `useWorker()` / `useSharedWorker()`, next to the shared refs. `onChunk` without `streaming` neither warns nor fills `chunks`.
+- `concurrency: 'parallel' | 'latest' | 'serial'`. `latest` supersedes older runs with an `AbortError` whose `reason` is `WORKER_SUPERSEDED` (`isSupersededError()`); `serial` queues runs and `cancel()` drops the queue.
+- `defineWorkerOperations()` and `call(name, input, options)` with inferred types, `UNKNOWN_OPERATION`, `WorkerModuleOperations` / `WorkerOperationInput` / `WorkerOperationOutput`; the cache key includes the operation.
+- `WorkerHandlerError` with `code` / `details` / `cause` (up to 3 levels); not cloneable details become a string with `detailsDropped: true`.
+- `unwrap: 'shallow' | 'deep'` and, in dev, a `DataCloneError` hint naming the path to the first reactive proxy.
+- `useWorkerComputed()`: `worker`, `immediate` options and `refresh()`.
+- Pool `idleTimeout` and `RunOptions.affinity` with pool `affinityMode: 'prefer' | 'strict'`.
+- Tests on real `worker_threads` for cooperative cancel, `hardCancelOnAbort`, `latest` and pool `map`.
+
 ## [0.2.0] - 2026-08-19
 
 ### Added

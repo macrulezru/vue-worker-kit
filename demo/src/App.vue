@@ -7,6 +7,7 @@ import { useSharedWorker } from 'vue-worker-kit/shared'
 import { createWorkerActivityMonitor, WorkerActivityPanel } from 'vue-worker-kit/devtools'
 import { insertionSort } from './lib/insertionSort'
 import { countPrimesInRange } from './lib/countPrimes'
+import Features03 from './Features03.vue'
 
 // ---- Main-thread monitor: a dot that glides back and forth via requestAnimationFrame ----
 // Deliberately driven from JS (not a CSS @keyframes animation, which the compositor thread
@@ -453,5 +454,6 @@ workerStack: {{ throwingWorker.error.value.workerStack }}</pre>
         <WorkerActivityPanel :monitor="sharedMonitor" />
       </template>
     </section>
+    <Features03 />
   </main>
 </template>

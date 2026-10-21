@@ -15,7 +15,10 @@ Type-safe Web Worker composables for Vue 3 — `useWorker()`, a worker pool, and
 - **`defineWorkerHandler()`** — worker-side helper that wires the run/cancel message protocol automatically; you only write the handler function
 - **Transferables** — zero-copy transfer into the worker (`RunOptions.transfer`) and back out (`ctx.transfer()`), for large buffers like images or `OffscreenCanvas` frames
 - **Streaming / chunked results** — `ctx.reportChunk()` sends intermediate results while a long task is still running, collected reactively in `chunks`
-- **Cancellation** — `AbortSignal` support, cooperative via `ctx.signal`; `run()` rejects immediately regardless of what the worker is doing
+- **Cancellation** — `AbortSignal` support, cooperative via `ctx.signal` and `ctx.yield()` in long loops, or `hardCancelOnAbort` to terminate the worker thread; `run()` rejects immediately regardless of what the worker is doing
+- **Concurrency modes** — `parallel`, `latest` (a new run supersedes older ones) or `serial` (one by one, `cancel()` clears the queue)
+- **Typed operations** — `defineWorkerOperations()` + `call(name, input)`: several named operations in one worker, names and types inferred
+- **Errors with data** — `WorkerHandlerError` carries `code`, `details` and a `cause` chain to the main thread
 - **Retry with backoff** — `retries`/`retryDelay` options retry non-abort failures automatically, with a constant or attempt-based delay
 - **Memoization / result cache** — opt-in LRU cache keyed by `JSON.stringify(input)`, skips the worker round-trip entirely for a repeated input
 - **Warmup** — pre-create a worker (or a whole pool) ahead of time to eliminate the ~50-200ms cold-start latency on the first real task
@@ -115,6 +118,85 @@ watch(chunks, (newChunks) => {
 // Worker-side calls ctx.reportChunk(data) as it processes each batch —
 // chunks.value fills in progressively while run() is still pending.
 ```
+
+---
+
+## Cancellation, concurrency & operations
+
+### Cooperative cancellation in long loops
+
+A synchronous loop inside a handler blocks its worker thread: the worker cannot even receive the cancel message until the loop ends. `run()` still rejects at once on the main side, but the CPU stays busy. Give the loop a way out:
+
+```ts
+import { defineWorkerHandler } from 'vue-worker-kit/worker'
+
+export default defineWorkerHandler(async (rows: Row[], ctx) => {
+  const out = []
+  for (let i = 0; i < rows.length; i++) {
+    out.push(heavy(rows[i]))
+    if (i % 1000 === 0) await ctx.yield()
+  }
+  return out
+})
+```
+
+`await ctx.yield()` hands control back to the event loop (so a pending cancel can be delivered) and then throws if the run was aborted; `ctx.throwIfAborted()` does only the check. Without either call, the only way to stop a busy loop is `hardCancelOnAbort: true`, which terminates the worker thread.
+
+> A pool without `hardCancelOnAbort` cancels running tasks cooperatively only. A queued task is rejected immediately; a running one keeps its slot until the handler yields or finishes.
+
+### Concurrency modes
+
+```ts
+const search = useWorker<typeof import('./search.worker')>(factory, {
+  concurrency: 'latest',
+  hardCancelOnAbort: true,
+})
+```
+
+- `'parallel'` (default) — every `run()` starts at once.
+- `'latest'` — a new run supersedes the previous ones: they reject with an `AbortError` whose `reason` is `WORKER_SUPERSEDED` (check with `isSupersededError()`). It is never written to `error`, and your own `signal` is not aborted.
+- `'serial'` — runs go one by one; `cancel()` aborts the current run and clears the queue.
+
+### Typed operations
+
+```ts
+// tools.worker.ts
+export default defineWorkerOperations({
+  parse: (input: { text: string }) => ({ length: input.text.length }),
+  format: async (input: { value: number }) => `v=${input.value}`,
+})
+
+// main
+const tools = useWorker<typeof import('./tools.worker')>(factory)
+const parsed = await tools.call('parse', { text: 'hello' })
+```
+
+Names, inputs and outputs are inferred. Works with `useWorker`, pools and `useSharedWorker`; an unknown name fails with `code: 'UNKNOWN_OPERATION'`.
+
+### Errors with data
+
+```ts
+throw new WorkerHandlerError('Bad row', { code: 'E_ROW', details: { row: 7 } })
+```
+
+`code` and `details` arrive on the `WorkerError`. If `details` cannot be structured-cloned it is replaced by a string and `detailsDropped` is `true`.
+
+### More options
+
+- `run(input, { onProgress, onChunk })` — per-call callbacks next to the shared refs.
+- `unwrap: 'shallow' | 'deep'` — `'deep'` copies nested reactive proxies before posting; in dev a `DataCloneError` names the path to the first proxy.
+- `useWorkerComputed(factory, source, { worker, immediate, refresh })`.
+- Pool: `idleTimeout`, `RunOptions.affinity` with `affinityMode: 'prefer' | 'strict'`.
+- The result cache key is `JSON.stringify(input)` plus the operation name: inputs that differ only in non-serializable parts share an entry.
+
+### Which one to use
+
+| Need                                      | Use                 |
+| ----------------------------------------- | ------------------- |
+| One heavy task at a time, reactive state  | `useWorker`         |
+| Many independent small tasks across cores | `createWorkerPool`  |
+| A value derived from reactive state       | `useWorkerComputed` |
+| One computation shared by all tabs        | `useSharedWorker`   |
 
 ---
 

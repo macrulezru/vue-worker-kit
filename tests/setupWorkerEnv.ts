@@ -2,7 +2,9 @@
 // fail fast with a clear message instead of confusing downstream test failures.
 for (const name of ['structuredClone', 'AbortController', 'DOMException'] as const) {
   if (typeof globalThis[name] === 'undefined') {
-    throw new Error(`vue-worker-kit tests require a global \`${name}\` (available natively in Node 17+).`)
+    throw new Error(
+      `vue-worker-kit tests require a global \`${name}\` (available natively in Node 17+).`,
+    )
   }
 }
 

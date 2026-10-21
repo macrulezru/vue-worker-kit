@@ -1,6 +1,7 @@
-import { toRaw } from 'vue'
 import { WorkerError, workerErrorFromSerialized } from '../errors'
 import { isDevMode } from './isDevMode'
+import { findReactivePath, unwrapInput } from './unwrap'
+import type { UnwrapMode } from '../types'
 import type { WorkerLike, WorkerToMainMessage } from '../protocol'
 
 interface PendingRequest {
@@ -15,12 +16,18 @@ interface PendingRequest {
   chunkDropWarned?: boolean
 }
 
+export interface SendOptions {
+  op?: string
+  unwrap?: UnwrapMode
+}
+
 export interface WorkerClient {
   send(
     input: unknown,
     transfer: Transferable[] | undefined,
     onProgress?: (value: number) => void,
     onChunk?: (chunk: unknown) => void,
+    sendOptions?: SendOptions,
   ): {
     id: number
     promise: Promise<unknown>
@@ -89,6 +96,7 @@ export function createWorkerClient(worker: WorkerLike, onCrash?: () => void): Wo
     transfer: Transferable[] | undefined,
     onProgress?: (value: number) => void,
     onChunk?: (chunk: unknown) => void,
+    sendOptions: SendOptions = {},
   ): { id: number; promise: Promise<unknown> } {
     const id = nextId++
     // Created here (synchronously, at the call site) so a later failure's `.cause` points
@@ -103,13 +111,24 @@ export function createWorkerClient(worker: WorkerLike, onCrash?: () => void): Wo
       // Reactive proxies (a ref/reactive `.value` passed straight from a component) aren't
       // structured-cloneable — postMessage would throw DataCloneError on the Proxy itself,
       // even though the underlying plain data is perfectly serializable.
-      worker.postMessage({ type: 'run', id, input: toRaw(input) }, transfer ?? [])
+      const message: { type: 'run'; id: number; input: unknown; op?: string } = {
+        type: 'run',
+        id,
+        input: unwrapInput(input, sendOptions.unwrap ?? 'shallow'),
+      }
+      if (sendOptions.op !== undefined) message.op = sendOptions.op
+      worker.postMessage(message, transfer ?? [])
     } catch (cause) {
       pending.delete(id)
+      const reactivePath = isDevMode() ? findReactivePath(input) : undefined
+      const hint =
+        reactivePath === undefined
+          ? ''
+          : `. A reactive proxy was found at ${reactivePath} — pass \`unwrap: 'deep'\` or call toRaw() on the data before run()`
       return {
         id,
         promise: Promise.reject(
-          new WorkerError('Failed to clone data for the worker (structured clone failure)', {
+          new WorkerError(`Failed to clone data for the worker (structured clone failure)${hint}`, {
             name: 'DataCloneError',
             cause,
           }),

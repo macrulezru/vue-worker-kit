@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest'
-import { attachSharedWorkerProtocol, attachWorkerProtocol, defineWorkerHandler } from '../../src/worker/defineWorkerHandler'
+import {
+  attachSharedWorkerProtocol,
+  attachWorkerProtocol,
+  defineWorkerHandler,
+} from '../../src/worker/defineWorkerHandler'
 import type { MessagePortLike, SharedWorkerScopeLike, WorkerScopeLike } from '../../src/protocol'
 
 describe('defineWorkerHandler', () => {
@@ -50,7 +54,11 @@ describe('attachWorkerProtocol', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0))
     const progressMessages = posted.filter((m) => (m as { type: string }).type === 'progress')
-    expect(progressMessages[progressMessages.length - 1]).toEqual({ type: 'progress', id: 1, value: 1 })
+    expect(progressMessages[progressMessages.length - 1]).toEqual({
+      type: 'progress',
+      id: 1,
+      value: 1,
+    })
   })
 
   test('a thrown handler error is serialized into an `error` message', async () => {
@@ -105,13 +113,15 @@ describe('attachSharedWorkerProtocol', () => {
   function createPortPair(): { clientPort: MessagePortLike; workerPort: MessagePortLike } {
     const clientPort: MessagePortLike = {
       onmessage: null,
-      postMessage: (message) => queueMicrotask(() => workerPort.onmessage?.({ data: message } as MessageEvent)),
+      postMessage: (message) =>
+        queueMicrotask(() => workerPort.onmessage?.({ data: message } as MessageEvent)),
       close() {},
       start() {},
     }
     const workerPort: MessagePortLike = {
       onmessage: null,
-      postMessage: (message) => queueMicrotask(() => clientPort.onmessage?.({ data: message } as MessageEvent)),
+      postMessage: (message) =>
+        queueMicrotask(() => clientPort.onmessage?.({ data: message } as MessageEvent)),
       close() {},
       start() {},
     }
@@ -158,7 +168,7 @@ describe('attachSharedWorkerProtocol', () => {
     expect(receivedA).toContainEqual({ type: 'portCount', count: 1 })
   })
 
-  test('cancelling a task on one tab does not affect another tab\'s in-flight request with the same id', async () => {
+  test("cancelling a task on one tab does not affect another tab's in-flight request with the same id", async () => {
     const scope: SharedWorkerScopeLike = { onconnect: null }
     attachSharedWorkerProtocol(async (input: number, ctx) => {
       await new Promise((resolve) => setTimeout(resolve, 10))
@@ -185,7 +195,7 @@ describe('attachSharedWorkerProtocol', () => {
     expect(receivedB).toContainEqual({ type: 'result', id: 1, output: 2 })
   })
 
-  test('a cooperative disconnect aborts that port\'s own in-flight run request', async () => {
+  test("a cooperative disconnect aborts that port's own in-flight run request", async () => {
     let observedAborted = false
     let notifyHandlerSawAbort: (() => void) | undefined
     const handlerSawAbort = new Promise<void>((resolve) => {
